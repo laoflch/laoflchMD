@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
-import { join } from 'path'
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+import { join, dirname, basename } from 'path'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, renameSync, unlinkSync, rmdirSync } from 'fs'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -86,7 +86,13 @@ function createWindow(): void {
         { role: 'zoomIn', label: '放大' },
         { role: 'zoomOut', label: '缩小' },
         { type: 'separator' },
-        { role: 'togglefullscreen', label: '全屏' }
+        { role: 'togglefullscreen', label: '全屏' },
+        { type: 'separator' },
+        {
+          label: '切换侧边栏',
+          accelerator: 'CmdOrCtrl+Shift+L',
+          click: () => mainWindow?.webContents.send('menu-toggle-sidebar')
+        }
       ]
     },
     {
@@ -270,6 +276,149 @@ ipcMain.handle('export:pdf', async (_event, html: string) => {
 
   writeFileSync(result.filePath, pdfData)
   printWindow.close()
+})
+
+// File tree IPC handlers
+ipcMain.handle('filetree:readFile', async (_event, filePath: string) => {
+  try {
+    const content = readFileSync(filePath, 'utf-8')
+    return content
+  } catch {
+    return null
+  }
+})
+
+ipcMain.handle('filetree:readDir', async (_event, dirPath: string) => {
+  try {
+    const entries = readdirSync(dirPath)
+    const result: Array<{ name: string; path: string; isDirectory: boolean; isMarkdown: boolean }> = []
+
+    for (const entry of entries) {
+      // Skip hidden files/directories
+      if (entry.startsWith('.')) continue
+
+      const fullPath = join(dirPath, entry)
+      const stats = statSync(fullPath)
+      const isDir = stats.isDirectory()
+      const ext = entry.toLowerCase()
+
+      result.push({
+        name: entry,
+        path: fullPath,
+        isDirectory: isDir,
+        isMarkdown: !isDir && ['.md', '.markdown', '.mdown'].some(e => ext.endsWith(e))
+      })
+    }
+
+    // Sort: directories first, then by name
+    result.sort((a, b) => {
+      if (a.isDirectory !== b.isDirectory) {
+        return a.isDirectory ? -1 : 1
+      }
+      return a.name.localeCompare(b.name)
+    })
+
+    return result
+  } catch {
+    return []
+  }
+})
+
+ipcMain.handle('filetree:openDirectory', async () => {
+  if (!mainWindow) return null
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory']
+  })
+  if (result.canceled || result.filePaths.length === 0) return null
+  return result.filePaths[0]
+})
+
+ipcMain.handle('filetree:getFileDir', async (_event, filePath: string) => {
+  if (!filePath) return null
+  return dirname(filePath)
+})
+
+ipcMain.handle('filetree:newFile', async (_event, dirPath: string) => {
+  if (!mainWindow) return null
+
+  // Find a unique name for the new file
+  let index = 1
+  let fileName = `untitled-${index}.md`
+  while (existsSync(join(dirPath, fileName))) {
+    index++
+    fileName = `untitled-${index}.md`
+  }
+
+  const filePath = join(dirPath, fileName)
+  writeFileSync(filePath, '', 'utf-8')
+  return { name: fileName, path: filePath }
+})
+
+ipcMain.handle('filetree:newFolder', async (_event, dirPath: string) => {
+  let index = 1
+  let folderName = `new-folder-${index}`
+  while (existsSync(join(dirPath, folderName))) {
+    index++
+    folderName = `new-folder-${index}`
+  }
+
+  const folderPath = join(dirPath, folderName)
+  mkdirSync(folderPath, { recursive: true })
+  return { name: folderName, path: folderPath }
+})
+
+ipcMain.handle('filetree:rename', async (_event, oldPath: string, newName: string) => {
+  try {
+    const dir = dirname(oldPath)
+    const newPath = join(dir, newName)
+    renameSync(oldPath, newPath)
+    return newPath
+  } catch {
+    return null
+  }
+})
+
+ipcMain.handle('filetree:delete', async (_event, targetPath: string) => {
+  if (!mainWindow) return false
+
+  const stats = statSync(targetPath)
+  const name = basename(targetPath)
+  const isDir = stats.isDirectory()
+
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    buttons: ['取消', '删除'],
+    defaultId: 0,
+    title: '确认删除',
+    message: isDir ? `确定删除文件夹 "${name}" 及其所有内容？` : `确定删除文件 "${name}"？`
+  })
+
+  if (result.response !== 1) return false
+
+  try {
+    if (isDir) {
+      // Simple recursive delete for directories
+      const deleteRecursive = (dirPath: string) => {
+        const entries = readdirSync(dirPath)
+        for (const entry of entries) {
+          const fullPath = join(dirPath, entry)
+          const entryStat = statSync(fullPath)
+          if (entryStat.isDirectory()) {
+            deleteRecursive(fullPath)
+          } else {
+            unlinkSync(fullPath)
+          }
+        }
+        rmdirSync(dirPath)
+      }
+      deleteRecursive(targetPath)
+    } else {
+      unlinkSync(targetPath)
+    }
+    return true
+  } catch {
+    return false
+  }
 })
 
 function getExportStyles(): string {

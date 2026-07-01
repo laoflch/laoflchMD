@@ -4,13 +4,13 @@
   "description": "Cross-platform Markdown Editor built with Electron + Vue 3",
   "main": "./out/main/index.js",
   "scripts": {
-    "dev": "NODE=/workspace/nodejs/node-v20.10.0-linux-x64/bin/node /workspace/nodejs/node-v20.10.0-linux-x64/bin/node ./node_modules/electron-vite/dist/cli.cjs dev",
-    "build": "NODE=/workspace/nodejs/node-v20.10.0-linux-x64/bin/node /workspace/nodejs/node-v20.10.0-linux-x64/bin/node ./node_modules/electron-vite/dist/cli.cjs build",
-    "preview": "NODE=/workspace/nodejs/node-v20.10.0-linux-x64/bin/node /workspace/nodejs/node-v20.10.0-linux-x64/bin/node ./node_modules/electron-vite/dist/cli.cjs preview",
+    "dev": "/workspace/nodejs/node-v22.14.0-linux-x64/bin/node ./node_modules/electron-vite/dist/cli.cjs dev",
+    "build": "/workspace/nodejs/node-v22.14.0-linux-x64/bin/node ./node_modules/electron-vite/dist/cli.cjs build",
+    "preview": "/workspace/nodejs/node-v22.14.0-linux-x64/bin/node ./node_modules/electron-vite/dist/cli.cjs preview",
     "postinstall": "echo 'skip electron-builder postinstall'",
-    "build:win": "npm run build && electron-builder --win",
-    "build:mac": "npm run build && electron-builder --mac",
-    "build:linux": "npm run build && electron-builder --linux"
+    "build:win": "/workspace/nodejs/node-v22.14.0-linux-x64/bin/node ./node_modules/electron-vite/dist/cli.cjs build && /workspace/nodejs/node-v22.14.0-linux-x64/bin/node ./node_modules/electron-builder/cli.js --win",
+    "build:mac": "/workspace/nodejs/node-v22.14.0-linux-x64/bin/node ./node_modules/electron-vite/dist/cli.cjs build && /workspace/nodejs/node-v22.14.0-linux-x64/bin/node ./node_modules/electron-builder/cli.js --mac",
+    "build:linux": "/workspace/nodejs/node-v22.14.0-linux-x64/bin/node ./node_modules/electron-vite/dist/cli.cjs build && /workspace/nodejs/node-v22.14.0-linux-x64/bin/node ./node_modules/electron-builder/cli.js --linux"
   },
   "dependencies": {
     "vue": "^3.5.39",
@@ -37,22 +37,15 @@
       "output": "release"
     },
     "win": {
-      "target": [
-        "nsis"
-      ],
+      "target": ["nsis"],
       "icon": "resources/icon.ico"
     },
     "mac": {
-      "target": [
-        "dmg"
-      ],
+      "target": ["dmg"],
       "icon": "resources/icon.icns"
     },
     "linux": {
-      "target": [
-        "AppImage",
-        "deb"
-      ],
+      "target": ["AppImage", "deb"],
       "icon": "resources"
     }
   }

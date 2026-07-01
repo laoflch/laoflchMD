@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 contextBridge.exposeInMainWorld('api', {
+  // File operations
   openFile: () => ipcRenderer.invoke('dialog:openFile'),
   saveFile: (content: string, filePath?: string) =>
     ipcRenderer.invoke('dialog:saveFile', content, filePath),
@@ -9,6 +10,16 @@ contextBridge.exposeInMainWorld('api', {
   setTitle: (title: string) => ipcRenderer.invoke('setTitle', title),
   exportHtml: (html: string) => ipcRenderer.invoke('export:html', html),
   exportPdf: (html: string) => ipcRenderer.invoke('export:pdf', html),
+
+  // File tree operations
+  readFile: (filePath: string) => ipcRenderer.invoke('filetree:readFile', filePath),
+  readDir: (dirPath: string) => ipcRenderer.invoke('filetree:readDir', dirPath),
+  openDirectory: () => ipcRenderer.invoke('filetree:openDirectory'),
+  getFileDir: (filePath: string) => ipcRenderer.invoke('filetree:getFileDir', filePath),
+  newFile: (dirPath: string) => ipcRenderer.invoke('filetree:newFile', dirPath),
+  newFolder: (dirPath: string) => ipcRenderer.invoke('filetree:newFolder', dirPath),
+  rename: (oldPath: string, newName: string) => ipcRenderer.invoke('filetree:rename', oldPath, newName),
+  delete: (targetPath: string) => ipcRenderer.invoke('filetree:delete', targetPath),
 
   // Menu event listeners
   onNewFile: (callback: () => void) => {
@@ -38,5 +49,9 @@ contextBridge.exposeInMainWorld('api', {
   onToggleTheme: (callback: () => void) => {
     ipcRenderer.on('menu-toggle-theme', callback)
     return () => ipcRenderer.removeListener('menu-toggle-theme', callback)
+  },
+  onToggleSidebar: (callback: () => void) => {
+    ipcRenderer.on('menu-toggle-sidebar', callback)
+    return () => ipcRenderer.removeListener('menu-toggle-sidebar', callback)
   }
 })

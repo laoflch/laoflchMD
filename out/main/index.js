@@ -82,7 +82,13 @@ function createWindow() {
         { role: "zoomIn", label: "放大" },
         { role: "zoomOut", label: "缩小" },
         { type: "separator" },
-        { role: "togglefullscreen", label: "全屏" }
+        { role: "togglefullscreen", label: "全屏" },
+        { type: "separator" },
+        {
+          label: "切换侧边栏",
+          accelerator: "CmdOrCtrl+Shift+L",
+          click: () => mainWindow?.webContents.send("menu-toggle-sidebar")
+        }
       ]
     },
     {
@@ -233,6 +239,124 @@ electron.ipcMain.handle("export:pdf", async (_event, html) => {
   });
   fs.writeFileSync(result.filePath, pdfData);
   printWindow.close();
+});
+electron.ipcMain.handle("filetree:readFile", async (_event, filePath) => {
+  try {
+    const content = fs.readFileSync(filePath, "utf-8");
+    return content;
+  } catch {
+    return null;
+  }
+});
+electron.ipcMain.handle("filetree:readDir", async (_event, dirPath) => {
+  try {
+    const entries = fs.readdirSync(dirPath);
+    const result = [];
+    for (const entry of entries) {
+      if (entry.startsWith(".")) continue;
+      const fullPath = path.join(dirPath, entry);
+      const stats = fs.statSync(fullPath);
+      const isDir = stats.isDirectory();
+      const ext = entry.toLowerCase();
+      result.push({
+        name: entry,
+        path: fullPath,
+        isDirectory: isDir,
+        isMarkdown: !isDir && [".md", ".markdown", ".mdown"].some((e) => ext.endsWith(e))
+      });
+    }
+    result.sort((a, b) => {
+      if (a.isDirectory !== b.isDirectory) {
+        return a.isDirectory ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name);
+    });
+    return result;
+  } catch {
+    return [];
+  }
+});
+electron.ipcMain.handle("filetree:openDirectory", async () => {
+  if (!mainWindow) return null;
+  const result = await electron.dialog.showOpenDialog(mainWindow, {
+    properties: ["openDirectory"]
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  return result.filePaths[0];
+});
+electron.ipcMain.handle("filetree:getFileDir", async (_event, filePath) => {
+  if (!filePath) return null;
+  return path.dirname(filePath);
+});
+electron.ipcMain.handle("filetree:newFile", async (_event, dirPath) => {
+  if (!mainWindow) return null;
+  let index = 1;
+  let fileName = `untitled-${index}.md`;
+  while (fs.existsSync(path.join(dirPath, fileName))) {
+    index++;
+    fileName = `untitled-${index}.md`;
+  }
+  const filePath = path.join(dirPath, fileName);
+  fs.writeFileSync(filePath, "", "utf-8");
+  return { name: fileName, path: filePath };
+});
+electron.ipcMain.handle("filetree:newFolder", async (_event, dirPath) => {
+  let index = 1;
+  let folderName = `new-folder-${index}`;
+  while (fs.existsSync(path.join(dirPath, folderName))) {
+    index++;
+    folderName = `new-folder-${index}`;
+  }
+  const folderPath = path.join(dirPath, folderName);
+  fs.mkdirSync(folderPath, { recursive: true });
+  return { name: folderName, path: folderPath };
+});
+electron.ipcMain.handle("filetree:rename", async (_event, oldPath, newName) => {
+  try {
+    const dir = path.dirname(oldPath);
+    const newPath = path.join(dir, newName);
+    fs.renameSync(oldPath, newPath);
+    return newPath;
+  } catch {
+    return null;
+  }
+});
+electron.ipcMain.handle("filetree:delete", async (_event, targetPath) => {
+  if (!mainWindow) return false;
+  const stats = fs.statSync(targetPath);
+  const name = path.basename(targetPath);
+  const isDir = stats.isDirectory();
+  const result = await electron.dialog.showMessageBox(mainWindow, {
+    type: "warning",
+    buttons: ["取消", "删除"],
+    defaultId: 0,
+    title: "确认删除",
+    message: isDir ? `确定删除文件夹 "${name}" 及其所有内容？` : `确定删除文件 "${name}"？`
+  });
+  if (result.response !== 1) return false;
+  try {
+    if (isDir) {
+      const deleteRecursive = (dirPath) => {
+        const entries = fs.readdirSync(dirPath);
+        for (const entry of entries) {
+          const fullPath = path.join(dirPath, entry);
+          const entryStat = fs.statSync(fullPath);
+          if (entryStat.isDirectory()) {
+            deleteRecursive(fullPath);
+          } else {
+            fs.unlinkSync(fullPath);
+          }
+        }
+        fs.rmdirSync(dirPath);
+      };
+      deleteRecursive(targetPath);
+    } else {
+      fs.unlinkSync(targetPath);
+    }
+    return true;
+  } catch {
+    return false;
+  }
 });
 function getExportStyles() {
   return `

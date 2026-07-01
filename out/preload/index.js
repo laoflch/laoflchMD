@@ -1,6 +1,7 @@
 "use strict";
 const electron = require("electron");
 electron.contextBridge.exposeInMainWorld("api", {
+  // File operations
   openFile: () => electron.ipcRenderer.invoke("dialog:openFile"),
   saveFile: (content, filePath) => electron.ipcRenderer.invoke("dialog:saveFile", content, filePath),
   saveFileAs: (content) => electron.ipcRenderer.invoke("dialog:saveFileAs", content),
@@ -8,6 +9,15 @@ electron.contextBridge.exposeInMainWorld("api", {
   setTitle: (title) => electron.ipcRenderer.invoke("setTitle", title),
   exportHtml: (html) => electron.ipcRenderer.invoke("export:html", html),
   exportPdf: (html) => electron.ipcRenderer.invoke("export:pdf", html),
+  // File tree operations
+  readFile: (filePath) => electron.ipcRenderer.invoke("filetree:readFile", filePath),
+  readDir: (dirPath) => electron.ipcRenderer.invoke("filetree:readDir", dirPath),
+  openDirectory: () => electron.ipcRenderer.invoke("filetree:openDirectory"),
+  getFileDir: (filePath) => electron.ipcRenderer.invoke("filetree:getFileDir", filePath),
+  newFile: (dirPath) => electron.ipcRenderer.invoke("filetree:newFile", dirPath),
+  newFolder: (dirPath) => electron.ipcRenderer.invoke("filetree:newFolder", dirPath),
+  rename: (oldPath, newName) => electron.ipcRenderer.invoke("filetree:rename", oldPath, newName),
+  delete: (targetPath) => electron.ipcRenderer.invoke("filetree:delete", targetPath),
   // Menu event listeners
   onNewFile: (callback) => {
     electron.ipcRenderer.on("menu-new-file", callback);
@@ -36,5 +46,9 @@ electron.contextBridge.exposeInMainWorld("api", {
   onToggleTheme: (callback) => {
     electron.ipcRenderer.on("menu-toggle-theme", callback);
     return () => electron.ipcRenderer.removeListener("menu-toggle-theme", callback);
+  },
+  onToggleSidebar: (callback) => {
+    electron.ipcRenderer.on("menu-toggle-sidebar", callback);
+    return () => electron.ipcRenderer.removeListener("menu-toggle-sidebar", callback);
   }
 });

@@ -1,14 +1,21 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, watch } from 'vue'
+import { onMounted, onUnmounted, watch, ref } from 'vue'
 import { useEditorStore } from './stores/editor'
 import TitleBar from './components/TitleBar.vue'
 import Toolbar from './components/Toolbar.vue'
 import Editor from './components/Editor.vue'
+import FileTree from './components/FileTree.vue'
 
 const store = useEditorStore()
+const showSidebar = ref(false)
+const fileTreeRef = ref<InstanceType<typeof FileTree> | null>(null)
 
 // Listen for menu events from Electron main process
 const cleanupFns: (() => void)[] = []
+
+function toggleSidebar() {
+  showSidebar.value = !showSidebar.value
+}
 
 onMounted(() => {
   if (window.api.onNewFile) {
@@ -43,10 +50,27 @@ onMounted(() => {
     const cleanup = window.api.onToggleTheme(() => store.toggleTheme())
     cleanupFns.push(cleanup)
   }
+  if (window.api.onToggleSidebar) {
+    const cleanup = window.api.onToggleSidebar(() => toggleSidebar())
+    cleanupFns.push(cleanup)
+  }
 })
+
+// Global keyboard shortcut for sidebar toggle
+function onGlobalKeydown(e: KeyboardEvent) {
+  if (e.ctrlKey && e.shiftKey && e.key === 'L') {
+    e.preventDefault()
+    toggleSidebar()
+  }
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('keydown', onGlobalKeydown)
+}
 
 onUnmounted(() => {
   cleanupFns.forEach(fn => fn())
+  document.removeEventListener('keydown', onGlobalKeydown)
 })
 
 // Update window title when filename changes
@@ -58,8 +82,17 @@ watch(() => store.fileName, (name) => {
 <template>
   <div class="app" :class="{ 'dark-theme': store.isDarkTheme }">
     <TitleBar />
-    <Toolbar />
-    <Editor />
+    <Toolbar @toggle-sidebar="toggleSidebar" :show-sidebar="showSidebar" />
+    <div class="main-content">
+      <transition name="sidebar">
+        <FileTree
+          v-if="showSidebar"
+          ref="fileTreeRef"
+          @close="showSidebar = false"
+        />
+      </transition>
+      <Editor />
+    </div>
   </div>
 </template>
 
@@ -141,6 +174,31 @@ html, body {
   height: 100vh;
   background: var(--bg-primary);
   transition: background 0.3s ease, color 0.3s ease;
+}
+
+.main-content {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* Sidebar transition */
+.sidebar-enter-active,
+.sidebar-leave-active {
+  transition: width 0.2s ease, opacity 0.2s ease;
+  overflow: hidden;
+}
+
+.sidebar-enter-from,
+.sidebar-leave-to {
+  width: 0 !important;
+  opacity: 0;
+}
+
+.sidebar-enter-to,
+.sidebar-leave-from {
+  width: 260px;
+  opacity: 1;
 }
 
 /* Scrollbar styling */
