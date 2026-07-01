@@ -1,0 +1,59 @@
+{
+  "name": "laoflchmd",
+  "version": "1.0.0",
+  "description": "Cross-platform Markdown Editor built with Electron + Vue 3",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "NODE=/workspace/nodejs/node-v20.10.0-linux-x64/bin/node /workspace/nodejs/node-v20.10.0-linux-x64/bin/node ./node_modules/electron-vite/dist/cli.cjs dev",
+    "build": "NODE=/workspace/nodejs/node-v20.10.0-linux-x64/bin/node /workspace/nodejs/node-v20.10.0-linux-x64/bin/node ./node_modules/electron-vite/dist/cli.cjs build",
+    "preview": "NODE=/workspace/nodejs/node-v20.10.0-linux-x64/bin/node /workspace/nodejs/node-v20.10.0-linux-x64/bin/node ./node_modules/electron-vite/dist/cli.cjs preview",
+    "postinstall": "echo 'skip electron-builder postinstall'",
+    "build:win": "npm run build && electron-builder --win",
+    "build:mac": "npm run build && electron-builder --mac",
+    "build:linux": "npm run build && electron-builder --linux"
+  },
+  "dependencies": {
+    "vue": "^3.5.39",
+    "pinia": "^3.0.4",
+    "markdown-it": "^14.2.0",
+    "highlight.js": "^11.11.1",
+    "markdown-it-task-lists": "^2.1.1",
+    "markdown-it-table-of-contents": "^1.2.0"
+  },
+  "devDependencies": {
+    "electron": "^35.7.0",
+    "electron-vite": "^2.3.0",
+    "electron-builder": "^26.15.3",
+    "@vitejs/plugin-vue": "^5.2.0",
+    "typescript": "^5.5.0",
+    "vue-tsc": "^2.2.0",
+    "@types/markdown-it": "^14.1.2",
+    "vite": "^5.4.0"
+  },
+  "build": {
+    "appId": "com.laoflch.md-editor",
+    "productName": "LaoflchMD",
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "resources/icon.ico"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "icon": "resources/icon.icns"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "resources"
+    }
+  }
+}

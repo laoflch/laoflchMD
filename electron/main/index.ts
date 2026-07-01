@@ -1,0 +1,309 @@
+import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
+import { join } from 'path'
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+
+let mainWindow: BrowserWindow | null = null
+
+function createWindow(): void {
+  mainWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    minWidth: 800,
+    minHeight: 600,
+    titleBarStyle: 'hidden',
+    frame: process.platform === 'darwin' ? false : true,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    },
+    show: false
+  })
+
+  mainWindow.on('ready-to-show', () => {
+    mainWindow?.show()
+  })
+
+  // Build application menu
+  const menuTemplate: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: '文件',
+      submenu: [
+        {
+          label: '新建',
+          accelerator: 'CmdOrCtrl+N',
+          click: () => mainWindow?.webContents.send('menu-new-file')
+        },
+        {
+          label: '打开',
+          accelerator: 'CmdOrCtrl+O',
+          click: () => mainWindow?.webContents.send('menu-open-file')
+        },
+        {
+          label: '保存',
+          accelerator: 'CmdOrCtrl+S',
+          click: () => mainWindow?.webContents.send('menu-save-file')
+        },
+        {
+          label: '另存为',
+          accelerator: 'CmdOrCtrl+Shift+S',
+          click: () => mainWindow?.webContents.send('menu-save-as-file')
+        },
+        { type: 'separator' },
+        {
+          label: '导出 HTML',
+          click: () => mainWindow?.webContents.send('menu-export-html')
+        },
+        {
+          label: '导出 PDF',
+          click: () => mainWindow?.webContents.send('menu-export-pdf')
+        },
+        { type: 'separator' },
+        { role: 'quit', label: '退出' }
+      ]
+    },
+    {
+      label: '编辑',
+      submenu: [
+        { role: 'undo', label: '撤销' },
+        { role: 'redo', label: '重做' },
+        { type: 'separator' },
+        { role: 'cut', label: '剪切' },
+        { role: 'copy', label: '复制' },
+        { role: 'paste', label: '粘贴' },
+        { role: 'selectAll', label: '全选' }
+      ]
+    },
+    {
+      label: '视图',
+      submenu: [
+        { role: 'reload', label: '刷新' },
+        { role: 'forceReload', label: '强制刷新' },
+        { role: 'toggleDevTools', label: '开发者工具' },
+        { type: 'separator' },
+        { role: 'resetZoom', label: '重置缩放' },
+        { role: 'zoomIn', label: '放大' },
+        { role: 'zoomOut', label: '缩小' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: '全屏' }
+      ]
+    },
+    {
+      label: '主题',
+      submenu: [
+        {
+          label: '切换亮色/暗色主题',
+          accelerator: 'CmdOrCtrl+Shift+T',
+          click: () => mainWindow?.webContents.send('menu-toggle-theme')
+        }
+      ]
+    }
+  ]
+
+  // macOS specific menu
+  if (process.platform === 'darwin') {
+    menuTemplate.unshift({
+      label: app.name,
+      submenu: [
+        { role: 'about', label: '关于' },
+        { type: 'separator' },
+        { role: 'hide', label: '隐藏' },
+        { role: 'hideOthers', label: '隐藏其他' },
+        { role: 'unhide', label: '显示全部' },
+        { type: 'separator' },
+        { role: 'quit', label: '退出' }
+      ]
+    })
+  }
+
+  const menu = Menu.buildFromTemplate(menuTemplate)
+  Menu.setApplicationMenu(menu)
+
+  if (process.env['ELECTRON_RENDERER_URL']) {
+    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  } else {
+    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+  }
+}
+
+// IPC Handlers for file operations
+ipcMain.handle('dialog:openFile', async () => {
+  if (!mainWindow) return null
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile'],
+    filters: [
+      { name: 'Markdown', extensions: ['md', 'markdown', 'mdown', 'mdx'] },
+      { name: '所有文件', extensions: ['*'] }
+    ]
+  })
+
+  if (result.canceled || result.filePaths.length === 0) return null
+
+  const filePath = result.filePaths[0]
+  const content = readFileSync(filePath, 'utf-8')
+  return { content, filePath }
+})
+
+ipcMain.handle('dialog:saveFile', async (_event, content: string, filePath?: string) => {
+  if (!mainWindow) return null
+
+  try {
+    if (filePath) {
+      writeFileSync(filePath, content, 'utf-8')
+      return filePath
+    }
+
+    const result = await dialog.showSaveDialog(mainWindow, {
+      filters: [
+        { name: 'Markdown', extensions: ['md'] },
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    })
+
+    if (result.canceled || !result.filePath) return null
+
+    writeFileSync(result.filePath, content, 'utf-8')
+    return result.filePath
+  } catch (err) {
+    console.error('Save file error:', err)
+    return null
+  }
+})
+
+ipcMain.handle('dialog:saveFileAs', async (_event, content: string) => {
+  if (!mainWindow) return null
+
+  const result = await dialog.showSaveDialog(mainWindow, {
+    filters: [
+      { name: 'Markdown', extensions: ['md'] },
+      { name: '所有文件', extensions: ['*'] }
+    ]
+  })
+
+  if (result.canceled || !result.filePath) return null
+
+  writeFileSync(result.filePath, content, 'utf-8')
+  return result.filePath
+})
+
+ipcMain.handle('setTitle', (_event, title: string) => {
+  if (mainWindow) {
+    mainWindow.setTitle(title ? `${title} - LaoflchMD` : 'LaoflchMD')
+  }
+})
+
+ipcMain.handle('getFilePath', () => {
+  return null // State is managed in renderer
+})
+
+ipcMain.handle('export:html', async (_event, html: string) => {
+  if (!mainWindow) return
+
+  const result = await dialog.showSaveDialog(mainWindow, {
+    filters: [
+      { name: 'HTML', extensions: ['html', 'htm'] }
+    ]
+  })
+
+  if (result.canceled || !result.filePath) return
+
+  const fullHtml = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${mainWindow?.getTitle() || 'Markdown Export'}</title>
+  <style>
+    body { max-width: 860px; margin: 0 auto; padding: 40px 20px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif; line-height: 1.6; }
+    ${getExportStyles()}
+  </style>
+</head>
+<body>${html}</body>
+</html>`
+
+  writeFileSync(result.filePath, fullHtml, 'utf-8')
+})
+
+ipcMain.handle('export:pdf', async (_event, html: string) => {
+  if (!mainWindow) return
+
+  const result = await dialog.showSaveDialog(mainWindow, {
+    filters: [
+      { name: 'PDF', extensions: ['pdf'] }
+    ]
+  })
+
+  if (result.canceled || !result.filePath) return
+
+  // Create a hidden BrowserWindow for PDF generation
+  const printWindow = new BrowserWindow({
+    width: 860,
+    height: 1100,
+    show: false,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+
+  const fullHtml = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Markdown Export</title>
+  <style>
+    body { max-width: 860px; margin: 0 auto; padding: 40px 20px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif; line-height: 1.6; }
+    ${getExportStyles()}
+  </style>
+</head>
+<body>${html}</body>
+</html>`
+
+  await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(fullHtml)}`)
+
+  const pdfData = await printWindow.webContents.printToPDF({
+    printBackground: true,
+    margins: { top: 20, bottom: 20, left: 20, right: 20 }
+  })
+
+  writeFileSync(result.filePath, pdfData)
+  printWindow.close()
+})
+
+function getExportStyles(): string {
+  return `
+    h1, h2, h3, h4, h5, h6 { margin-top: 24px; margin-bottom: 16px; font-weight: 600; line-height: 1.25; }
+    h1 { font-size: 2em; border-bottom: 1px solid #eaecef; padding-bottom: 0.3em; }
+    h2 { font-size: 1.5em; border-bottom: 1px solid #eaecef; padding-bottom: 0.3em; }
+    h3 { font-size: 1.25em; }
+    p { margin-top: 0; margin-bottom: 16px; }
+    code { background-color: rgba(27,31,35,0.05); border-radius: 3px; padding: 0.2em 0.4em; font-size: 85%; }
+    pre code { padding: 16px; overflow: auto; line-height: 1.45; background-color: #f6f8fa; border-radius: 3px; display: block; }
+    blockquote { padding: 0 1em; color: #6a737d; border-left: 0.25em solid #dfe2e5; margin: 0 0 16px 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 16px; }
+    table th, table td { border: 1px solid #dfe2e5; padding: 6px 13px; }
+    table th { background-color: #f6f8fa; }
+    img { max-width: 100%; }
+    hr { height: 0.25em; padding: 0; margin: 24px 0; background-color: #e1e4e8; border: 0; }
+    ul, ol { padding-left: 2em; margin-bottom: 16px; }
+    li { word-wrap: break-all; }
+  `
+}
+
+app.whenReady().then(() => {
+  createWindow()
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow()
+    }
+  })
+})
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit()
+  }
+})
