@@ -2,6 +2,7 @@
   "name": "laoflchmd",
   "version": "1.0.0",
   "description": "Cross-platform Markdown Editor built with Electron + Vue 3",
+  "author": "laoflch <laoflch@example.com>",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "/workspace/nodejs/node-v22.14.0-linux-x64/bin/node ./node_modules/electron-vite/dist/cli.cjs dev",
@@ -45,8 +46,9 @@
       "icon": "resources/icon.icns"
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": ["AppImage"],
       "icon": "resources"
-    }
+    },
+    "electronDist": "node_modules/electron/dist"
   }
 }

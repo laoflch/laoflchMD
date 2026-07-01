@@ -97,6 +97,55 @@ watch(() => store.fileName, (name) => {
 </template>
 
 <style>
+/* Import highlight.js light theme (default) */
+@import 'highlight.js/styles/github.css';
+
+/* Dark theme highlight.js overrides */
+.dark-theme .hljs {
+  color: #c9d1d9 !important;
+  background: #0d1117 !important;
+}
+.dark-theme .hljs-doctag,
+.dark-theme .hljs-keyword,
+.dark-theme .hljs-meta .hljs-keyword,
+.dark-theme .hljs-template-tag,
+.dark-theme .hljs-template-variable,
+.dark-theme .hljs-type,
+.dark-theme .hljs-variable.language_ { color: #ff7b72 !important; }
+.dark-theme .hljs-title,
+.dark-theme .hljs-title.class_,
+.dark-theme .hljs-title.class_.inherited__,
+.dark-theme .hljs-title.function_ { color: #d2a8ff !important; }
+.dark-theme .hljs-attr,
+.dark-theme .hljs-attribute,
+.dark-theme .hljs-literal,
+.dark-theme .hljs-meta,
+.dark-theme .hljs-number,
+.dark-theme .hljs-operator,
+.dark-theme .hljs-variable,
+.dark-theme .hljs-selector-attr,
+.dark-theme .hljs-selector-class,
+.dark-theme .hljs-selector-id { color: #79c0ff !important; }
+.dark-theme .hljs-regexp,
+.dark-theme .hljs-string,
+.dark-theme .hljs-meta .hljs-string { color: #a5d6ff !important; }
+.dark-theme .hljs-built_in,
+.dark-theme .hljs-symbol { color: #ffa657 !important; }
+.dark-theme .hljs-comment,
+.dark-theme .hljs-code,
+.dark-theme .hljs-formula { color: #8b949e !important; }
+.dark-theme .hljs-name,
+.dark-theme .hljs-quote,
+.dark-theme .hljs-selector-tag,
+.dark-theme .hljs-selector-pseudo { color: #7ee787 !important; }
+.dark-theme .hljs-subst { color: #c9d1d9 !important; }
+.dark-theme .hljs-section { color: #1f6feb !important; font-weight: 700 !important; }
+.dark-theme .hljs-bullet { color: #f2cc60 !important; }
+.dark-theme .hljs-emphasis { color: #c9d1d9 !important; font-style: italic !important; }
+.dark-theme .hljs-strong { color: #c9d1d9 !important; font-weight: 700 !important; }
+.dark-theme .hljs-addition { color: #aff5b4 !important; background: #033a16 !important; }
+.dark-theme .hljs-deletion { color: #ffdcd7 !important; background: #67060c !important; }
+
 /* Reset & Base */
 *,
 *::before,

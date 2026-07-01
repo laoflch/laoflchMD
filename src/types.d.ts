@@ -12,6 +12,13 @@ declare global {
       exportHtml: (html: string) => Promise<void>
       exportPdf: (html: string) => Promise<void>
 
+      // Window controls
+      minimizeWindow: () => Promise<void>
+      maximizeWindow: () => Promise<void>
+      closeWindow: () => Promise<void>
+      isMaximized: () => Promise<boolean>
+      onMaximizedChanged: (callback: (maximized: boolean) => void) => () => void
+
       // File tree operations
       readFile: (filePath: string) => Promise<string | null>
       readDir: (dirPath: string) => Promise<FileEntry[]>

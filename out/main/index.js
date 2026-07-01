@@ -9,8 +9,7 @@ function createWindow() {
     height: 800,
     minWidth: 800,
     minHeight: 600,
-    titleBarStyle: "hidden",
-    frame: process.platform === "darwin" ? false : true,
+    frame: false,
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.js"),
       contextIsolation: true,
@@ -21,6 +20,12 @@ function createWindow() {
   });
   mainWindow.on("ready-to-show", () => {
     mainWindow?.show();
+  });
+  mainWindow.on("maximize", () => {
+    mainWindow?.webContents.send("window:maximized-changed", true);
+  });
+  mainWindow.on("unmaximize", () => {
+    mainWindow?.webContents.send("window:maximized-changed", false);
   });
   const menuTemplate = [
     {
@@ -178,6 +183,22 @@ electron.ipcMain.handle("setTitle", (_event, title) => {
 });
 electron.ipcMain.handle("getFilePath", () => {
   return null;
+});
+electron.ipcMain.handle("window:minimize", () => {
+  mainWindow?.minimize();
+});
+electron.ipcMain.handle("window:maximize", () => {
+  if (mainWindow?.isMaximized()) {
+    mainWindow.unmaximize();
+  } else {
+    mainWindow?.maximize();
+  }
+});
+electron.ipcMain.handle("window:close", () => {
+  mainWindow?.close();
+});
+electron.ipcMain.handle("window:isMaximized", () => {
+  return mainWindow?.isMaximized() ?? false;
 });
 electron.ipcMain.handle("export:html", async (_event, html) => {
   if (!mainWindow) return;

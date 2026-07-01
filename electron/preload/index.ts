@@ -11,6 +11,17 @@ contextBridge.exposeInMainWorld('api', {
   exportHtml: (html: string) => ipcRenderer.invoke('export:html', html),
   exportPdf: (html: string) => ipcRenderer.invoke('export:pdf', html),
 
+  // Window controls
+  minimizeWindow: () => ipcRenderer.invoke('window:minimize'),
+  maximizeWindow: () => ipcRenderer.invoke('window:maximize'),
+  closeWindow: () => ipcRenderer.invoke('window:close'),
+  isMaximized: () => ipcRenderer.invoke('window:isMaximized'),
+  onMaximizedChanged: (callback: (maximized: boolean) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, maximized: boolean) => callback(maximized)
+    ipcRenderer.on('window:maximized-changed', handler)
+    return () => ipcRenderer.removeListener('window:maximized-changed', handler)
+  },
+
   // File tree operations
   readFile: (filePath: string) => ipcRenderer.invoke('filetree:readFile', filePath),
   readDir: (dirPath: string) => ipcRenderer.invoke('filetree:readDir', dirPath),

@@ -9,6 +9,16 @@ electron.contextBridge.exposeInMainWorld("api", {
   setTitle: (title) => electron.ipcRenderer.invoke("setTitle", title),
   exportHtml: (html) => electron.ipcRenderer.invoke("export:html", html),
   exportPdf: (html) => electron.ipcRenderer.invoke("export:pdf", html),
+  // Window controls
+  minimizeWindow: () => electron.ipcRenderer.invoke("window:minimize"),
+  maximizeWindow: () => electron.ipcRenderer.invoke("window:maximize"),
+  closeWindow: () => electron.ipcRenderer.invoke("window:close"),
+  isMaximized: () => electron.ipcRenderer.invoke("window:isMaximized"),
+  onMaximizedChanged: (callback) => {
+    const handler = (_event, maximized) => callback(maximized);
+    electron.ipcRenderer.on("window:maximized-changed", handler);
+    return () => electron.ipcRenderer.removeListener("window:maximized-changed", handler);
+  },
   // File tree operations
   readFile: (filePath) => electron.ipcRenderer.invoke("filetree:readFile", filePath),
   readDir: (dirPath) => electron.ipcRenderer.invoke("filetree:readDir", dirPath),

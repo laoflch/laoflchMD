@@ -10,8 +10,7 @@ function createWindow(): void {
     height: 800,
     minWidth: 800,
     minHeight: 600,
-    titleBarStyle: 'hidden',
-    frame: process.platform === 'darwin' ? false : true,
+    frame: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -23,6 +22,14 @@ function createWindow(): void {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow?.show()
+  })
+
+  mainWindow.on('maximize', () => {
+    mainWindow?.webContents.send('window:maximized-changed', true)
+  })
+
+  mainWindow.on('unmaximize', () => {
+    mainWindow?.webContents.send('window:maximized-changed', false)
   })
 
   // Build application menu
@@ -201,6 +208,27 @@ ipcMain.handle('setTitle', (_event, title: string) => {
 
 ipcMain.handle('getFilePath', () => {
   return null // State is managed in renderer
+})
+
+// Window control IPC handlers
+ipcMain.handle('window:minimize', () => {
+  mainWindow?.minimize()
+})
+
+ipcMain.handle('window:maximize', () => {
+  if (mainWindow?.isMaximized()) {
+    mainWindow.unmaximize()
+  } else {
+    mainWindow?.maximize()
+  }
+})
+
+ipcMain.handle('window:close', () => {
+  mainWindow?.close()
+})
+
+ipcMain.handle('window:isMaximized', () => {
+  return mainWindow?.isMaximized() ?? false
 })
 
 ipcMain.handle('export:html', async (_event, html: string) => {

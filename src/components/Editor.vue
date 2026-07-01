@@ -35,13 +35,34 @@ function onTextareaKeydown(event: KeyboardEvent) {
   }
 }
 
-function syncScroll() {
+let isSyncing = false
+
+function syncEditorToPreview() {
+  if (isSyncing) return
+  isSyncing = true
+
   const textarea = document.querySelector('.editor-textarea') as HTMLTextAreaElement
   const preview = document.querySelector('.preview-pane') as HTMLElement
-  if (textarea && preview) {
+  if (textarea && preview && textarea.scrollHeight > textarea.clientHeight) {
     const ratio = textarea.scrollTop / (textarea.scrollHeight - textarea.clientHeight)
     preview.scrollTop = ratio * (preview.scrollHeight - preview.clientHeight)
   }
+
+  isSyncing = false
+}
+
+function syncPreviewToEditor() {
+  if (isSyncing) return
+  isSyncing = true
+
+  const textarea = document.querySelector('.editor-textarea') as HTMLTextAreaElement
+  const preview = document.querySelector('.preview-pane') as HTMLElement
+  if (preview && textarea && preview.scrollHeight > preview.clientHeight) {
+    const ratio = preview.scrollTop / (preview.scrollHeight - preview.clientHeight)
+    textarea.scrollTop = ratio * (textarea.scrollHeight - textarea.clientHeight)
+  }
+
+  isSyncing = false
 }
 </script>
 
@@ -72,13 +93,13 @@ function syncScroll() {
           :value="store.content"
           @input="onTextareaInput"
           @keydown="onTextareaKeydown"
-          @scroll="syncScroll"
+          @scroll="syncEditorToPreview"
           placeholder="在此输入 Markdown..."
           spellcheck="true"
         ></textarea>
       </div>
       <div class="live-divider"></div>
-      <div class="live-preview preview-pane" @scroll="syncScroll">
+      <div class="live-preview preview-pane" @scroll="syncPreviewToEditor">
         <div class="preview-content markdown-body" v-html="store.renderedHtml"></div>
       </div>
     </div>
@@ -88,13 +109,18 @@ function syncScroll() {
 <style scoped>
 .editor-container {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
+  min-height: 0;
   position: relative;
 }
 
 /* Edit pane */
 .edit-pane {
-  height: 100%;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
 }
 
 .editor-textarea {
@@ -119,8 +145,9 @@ function syncScroll() {
 
 /* Preview pane */
 .preview-pane {
-  height: 100%;
+  flex: 1;
   overflow-y: auto;
+  min-height: 0;
 }
 
 .preview-content {
@@ -132,7 +159,8 @@ function syncScroll() {
 /* Live pane (split) */
 .live-pane {
   display: flex;
-  height: 100%;
+  flex: 1;
+  overflow: hidden;
 }
 
 .live-edit {
@@ -333,9 +361,5 @@ function syncScroll() {
   list-style: none;
 }
 
-/* Highlight.js overrides for dark mode */
-:deep(.hljs) {
-  background: var(--code-bg) !important;
-  color: var(--text-primary) !important;
-}
+
 </style>
