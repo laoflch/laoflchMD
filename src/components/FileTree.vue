@@ -44,6 +44,8 @@ async function openDir(dirPath: string) {
   loading.value = true
   treeData.value = await loadDir(dirPath)
   loading.value = false
+  // Save to localStorage for persistence across restarts
+  localStorage.setItem('lastOpenedDir', dirPath)
 }
 
 async function openDirectory() {
@@ -55,12 +57,14 @@ async function openDirectory() {
 
 async function selectNode(entry: FileEntry) {
   if (entry.isDirectory) {
-    // Toggle directory expansion in the store
-    if (expanded.value.has(entry.path)) {
-      expanded.value.delete(entry.path)
+    // Toggle directory expansion — create new Set to trigger reactivity
+    const newExpanded = new Set(expanded.value)
+    if (newExpanded.has(entry.path)) {
+      newExpanded.delete(entry.path)
     } else {
-      expanded.value.add(entry.path)
+      newExpanded.add(entry.path)
     }
+    expanded.value = newExpanded
     return
   }
 
@@ -83,12 +87,10 @@ async function refreshTree() {
   if (rootDir.value) {
     const currentDir = rootDir.value
     const wasExpanded = new Set(expanded.value)
-    expanded.value.clear()
+    expanded.value = new Set()
     await openDir(currentDir)
     // Restore expanded state
-    for (const path of wasExpanded) {
-      expanded.value.add(path)
-    }
+    expanded.value = new Set(wasExpanded)
   }
 }
 
@@ -162,11 +164,21 @@ if (typeof document !== 'undefined') {
 }
 
 onMounted(async () => {
+  // Try to restore last opened directory from localStorage
+  const lastDir = localStorage.getItem('lastOpenedDir')
+  if (lastDir) {
+    await openDir(lastDir)
+  }
+
+  // If a file was previously open, select it in the tree
   if (store.filePath) {
-    const dir = await window.api.getFileDir(store.filePath)
-    if (dir) {
-      await openDir(dir)
-      selectedPath.value = store.filePath
+    selectedPath.value = store.filePath
+    // If no lastDir was saved, try to open the directory of the current file
+    if (!lastDir) {
+      const dir = await window.api.getFileDir(store.filePath)
+      if (dir) {
+        await openDir(dir)
+      }
     }
   }
 })

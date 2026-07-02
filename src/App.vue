@@ -17,7 +17,19 @@ function toggleSidebar() {
   showSidebar.value = !showSidebar.value
 }
 
-onMounted(() => {
+onMounted(async () => {
+  // Detect system theme and apply it
+  if (window.api.getSystemTheme) {
+    const isDark = await window.api.getSystemTheme()
+    store.setTheme(isDark)
+  }
+  if (window.api.onSystemThemeChanged) {
+    const cleanup = window.api.onSystemThemeChanged((isDark) => {
+      store.setTheme(isDark)
+    })
+    cleanupFns.push(cleanup)
+  }
+
   if (window.api.onNewFile) {
     const cleanup = window.api.onNewFile(() => store.newFile())
     cleanupFns.push(cleanup)

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, Menu, nativeTheme } from 'electron'
 import { join, dirname, basename } from 'path'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, renameSync, unlinkSync, rmdirSync } from 'fs'
 
@@ -139,6 +139,16 @@ function createWindow(): void {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
 }
+
+// System theme detection
+ipcMain.handle('getSystemTheme', () => {
+  return nativeTheme.shouldUseDarkColors
+})
+
+// Watch for OS theme changes
+nativeTheme.on('updated', () => {
+  mainWindow?.webContents.send('system-theme-changed', nativeTheme.shouldUseDarkColors)
+})
 
 // IPC Handlers for file operations
 ipcMain.handle('dialog:openFile', async () => {

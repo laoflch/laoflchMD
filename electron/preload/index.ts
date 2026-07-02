@@ -64,5 +64,13 @@ contextBridge.exposeInMainWorld('api', {
   onToggleSidebar: (callback: () => void) => {
     ipcRenderer.on('menu-toggle-sidebar', callback)
     return () => ipcRenderer.removeListener('menu-toggle-sidebar', callback)
+  },
+
+  // System theme detection
+  getSystemTheme: () => ipcRenderer.invoke('getSystemTheme'),
+  onSystemThemeChanged: (callback: (isDark: boolean) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, isDark: boolean) => callback(isDark)
+    ipcRenderer.on('system-theme-changed', handler)
+    return () => ipcRenderer.removeListener('system-theme-changed', handler)
   }
 })

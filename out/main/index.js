@@ -129,6 +129,12 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
   }
 }
+electron.ipcMain.handle("getSystemTheme", () => {
+  return electron.nativeTheme.shouldUseDarkColors;
+});
+electron.nativeTheme.on("updated", () => {
+  mainWindow?.webContents.send("system-theme-changed", electron.nativeTheme.shouldUseDarkColors);
+});
 electron.ipcMain.handle("dialog:openFile", async () => {
   if (!mainWindow) return null;
   const result = await electron.dialog.showOpenDialog(mainWindow, {

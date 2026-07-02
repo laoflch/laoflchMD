@@ -1,7 +1,40 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import { useEditorStore } from '../stores/editor'
 
 const store = useEditorStore()
+
+const splitRatio = ref(0.5)
+const isDragging = ref(false)
+
+function onDividerMouseDown(e: MouseEvent) {
+  const divider = e.currentTarget as HTMLElement
+  const container = divider.closest('.live-pane') as HTMLElement
+  if (!container) return
+
+  isDragging.value = true
+  const startX = e.clientX
+  const startRatio = splitRatio.value
+  const containerWidth = container.offsetWidth
+
+  function onMouseMove(e: MouseEvent) {
+    const dx = e.clientX - startX
+    splitRatio.value = Math.max(0.15, Math.min(0.85, startRatio + dx / containerWidth))
+  }
+
+  function onMouseUp() {
+    isDragging.value = false
+    document.removeEventListener('mousemove', onMouseMove)
+    document.removeEventListener('mouseup', onMouseUp)
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+  }
+
+  document.addEventListener('mousemove', onMouseMove)
+  document.addEventListener('mouseup', onMouseUp)
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+}
 
 function onTextareaInput(event: Event) {
   const target = event.target as HTMLTextAreaElement
@@ -87,7 +120,7 @@ function syncPreviewToEditor() {
 
     <!-- Live mode: split view (Typora-like) -->
     <div v-else class="live-pane">
-      <div class="live-edit">
+      <div class="live-edit" :style="{ width: (splitRatio * 100) + '%' }">
         <textarea
           class="editor-textarea"
           :value="store.content"
@@ -98,7 +131,7 @@ function syncPreviewToEditor() {
           spellcheck="true"
         ></textarea>
       </div>
-      <div class="live-divider"></div>
+      <div class="live-divider" :class="{ dragging: isDragging }" @mousedown="onDividerMouseDown"></div>
       <div class="live-preview preview-pane" @scroll="syncPreviewToEditor">
         <div class="preview-content markdown-body" v-html="store.renderedHtml"></div>
       </div>
@@ -164,9 +197,10 @@ function syncPreviewToEditor() {
 }
 
 .live-edit {
-  flex: 1;
+  flex: none;
   overflow: hidden;
   border-right: none;
+  width: 50%;
 }
 
 .live-edit .editor-textarea {
@@ -197,8 +231,14 @@ function syncPreviewToEditor() {
   opacity: 0.8;
 }
 
+.live-divider.dragging::after {
+  opacity: 1;
+  width: 3px;
+}
+
 .live-preview {
   flex: 1;
+  min-width: 0;
   overflow-y: auto;
   background: var(--bg-secondary);
 }
@@ -264,7 +304,8 @@ function syncPreviewToEditor() {
 }
 
 :deep(.markdown-body code) {
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-variant-ligatures: none;
   background: var(--code-bg);
   border-radius: 3px;
   padding: 0.2em 0.4em;
@@ -286,6 +327,7 @@ function syncPreviewToEditor() {
   background: var(--code-bg);
   border-radius: 6px;
   font-size: 13px;
+  font-variant-ligatures: none;
 }
 
 :deep(.markdown-body blockquote) {

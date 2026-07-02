@@ -38,6 +38,10 @@ declare global {
       onExportPdf: (callback: () => void) => () => void
       onToggleTheme: (callback: () => void) => () => void
       onToggleSidebar: (callback: () => void) => () => void
+
+      // System theme detection
+      getSystemTheme: () => Promise<boolean>
+      onSystemThemeChanged: (callback: (isDark: boolean) => void) => () => void
     }
   }
 }

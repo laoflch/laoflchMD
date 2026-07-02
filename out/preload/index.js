@@ -60,5 +60,12 @@ electron.contextBridge.exposeInMainWorld("api", {
   onToggleSidebar: (callback) => {
     electron.ipcRenderer.on("menu-toggle-sidebar", callback);
     return () => electron.ipcRenderer.removeListener("menu-toggle-sidebar", callback);
+  },
+  // System theme detection
+  getSystemTheme: () => electron.ipcRenderer.invoke("getSystemTheme"),
+  onSystemThemeChanged: (callback) => {
+    const handler = (_event, isDark) => callback(isDark);
+    electron.ipcRenderer.on("system-theme-changed", handler);
+    return () => electron.ipcRenderer.removeListener("system-theme-changed", handler);
   }
 });
