@@ -5,6 +5,8 @@ import TitleBar from './components/TitleBar.vue'
 import Toolbar from './components/Toolbar.vue'
 import Editor from './components/Editor.vue'
 import FileTree from './components/FileTree.vue'
+// Import highlight.js CSS theme for code syntax highlighting
+import 'highlight.js/styles/github.css'
 
 const store = useEditorStore()
 const showSidebar = ref(false)
@@ -30,42 +32,23 @@ onMounted(async () => {
     cleanupFns.push(cleanup)
   }
 
-  if (window.api.onNewFile) {
-    const cleanup = window.api.onNewFile(() => store.newFile())
-    cleanupFns.push(cleanup)
-  }
-  if (window.api.onOpenFile) {
-    const cleanup = window.api.onOpenFile(() => store.openFile())
-    cleanupFns.push(cleanup)
-  }
-  if (window.api.onSaveFile) {
-    const cleanup = window.api.onSaveFile(() => store.saveFile())
-    cleanupFns.push(cleanup)
-  }
-  if (window.api.onSaveAsFile) {
-    const cleanup = window.api.onSaveAsFile(() => store.saveFileAs())
-    cleanupFns.push(cleanup)
-  }
-  if (window.api.onExportHtml) {
-    const cleanup = window.api.onExportHtml(() => {
-      window.api.exportHtml(store.renderedHtml)
-    })
-    cleanupFns.push(cleanup)
-  }
-  if (window.api.onExportPdf) {
-    const cleanup = window.api.onExportPdf(() => {
-      window.api.exportPdf(store.renderedHtml)
-    })
-    cleanupFns.push(cleanup)
-  }
-  if (window.api.onToggleTheme) {
-    const cleanup = window.api.onToggleTheme(() => store.toggleTheme())
-    cleanupFns.push(cleanup)
-  }
-  if (window.api.onToggleSidebar) {
-    const cleanup = window.api.onToggleSidebar(() => toggleSidebar())
-    cleanupFns.push(cleanup)
-  }
+  // Register menu event listeners (config-driven to avoid repetition)
+  const menuEventListeners: { register: (handler: () => void) => () => void; handler: () => void }[] = [
+    { register: window.api.onNewFile, handler: () => store.newFile() },
+    { register: window.api.onOpenFile, handler: () => store.openFile() },
+    { register: window.api.onSaveFile, handler: () => store.saveFile() },
+    { register: window.api.onSaveAsFile, handler: () => store.saveFileAs() },
+    { register: window.api.onExportHtml, handler: () => window.api.exportHtml(store.renderedHtml) },
+    { register: window.api.onExportPdf, handler: () => window.api.exportPdf(store.renderedHtml) },
+    { register: window.api.onToggleTheme, handler: () => store.toggleTheme() },
+    { register: window.api.onToggleSidebar, handler: () => toggleSidebar() }
+  ]
+
+  menuEventListeners.forEach(({ register, handler }) => {
+    if (typeof register === 'function') {
+      cleanupFns.push(register(handler))
+    }
+  })
 })
 
 // Global keyboard shortcut for sidebar toggle
@@ -109,9 +92,6 @@ watch(() => store.fileName, (name) => {
 </template>
 
 <style>
-/* Import highlight.js light theme (default) */
-@import 'highlight.js/styles/github.css';
-
 /* Dark theme highlight.js overrides */
 .dark-theme .hljs {
   color: #c9d1d9 !important;

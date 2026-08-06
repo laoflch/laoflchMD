@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, nextTick } from 'vue'
 import { useEditorStore } from '../stores/editor'
 import type { FileEntry } from '../types'
 import TreeNodeItem from './TreeNodeItem.vue'
@@ -15,6 +15,9 @@ const treeData = ref<FileEntry[]>([])
 const expanded = ref<Set<string>>(new Set())
 const selectedPath = ref<string | null>(null)
 const loading = ref(false)
+
+// Template refs for TreeNodeItem instances
+const renamingPath = ref<string | null>(null)
 
 // Context menu state
 const contextMenu = ref<{
@@ -151,6 +154,27 @@ async function handleDelete() {
   }
 }
 
+async function handleRename() {
+  const targetPath = contextMenu.value.targetPath
+  closeContextMenu()
+  await nextTick()
+  renamingPath.value = targetPath
+}
+
+async function handleRenameComplete(oldPath: string, newPath: string | null) {
+  renamingPath.value = null
+  if (!newPath) return
+  const currentFilePath = store.filePath
+  // If the renamed file itself was open, update the store file path
+  if (currentFilePath === oldPath) {
+    store.setFilePath(newPath)
+  } else if (currentFilePath && currentFilePath.startsWith(oldPath + '/')) {
+    // If a renamed ancestor directory of the open file was renamed, update the path accordingly
+    store.setFilePath(newPath + currentFilePath.slice(oldPath.length))
+  }
+  await refreshTree()
+}
+
 // Click outside context menu to close it
 if (typeof document !== 'undefined') {
   document.addEventListener('click', (e) => {
@@ -242,9 +266,11 @@ defineExpose({ refreshTree, openDir })
         :entry="entry"
         :expanded="expanded"
         :selected-path="selectedPath"
+        :renaming-path="renamingPath"
         :depth="0"
         @select="selectNode"
         @contextmenu="showContextMenu"
+        @rename-complete="handleRenameComplete"
       />
     </div>
 
@@ -265,6 +291,12 @@ defineExpose({ refreshTree, openDir })
           <path d="M1.5 3.5a1 1 0 0 1 1-1h3.172a1 1 0 0 1 .707.293L7.5 3.914H13.5a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1V3.5Z"/>
         </svg>
         新建文件夹
+      </div>
+      <div class="context-menu-item" @click="handleRename">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207 11.207 2.5zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293l6.5-6.5zm-9.761 5.175-.106.106-1.113 2.78 2.78-1.113.106-.106A.5.5 0 0 1 5 10.5V10h-.5a.5.5 0 0 1-.5-.5V9h-.293a.5.5 0 0 1-.176-.034z"/>
+        </svg>
+        重命名
       </div>
       <div class="context-menu-divider"></div>
       <div class="context-menu-item danger" @click="handleDelete">

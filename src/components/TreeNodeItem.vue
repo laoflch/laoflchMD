@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import type { FileEntry } from '../types'
 
 const props = defineProps<{
@@ -7,11 +7,13 @@ const props = defineProps<{
   expanded: Set<string>
   selectedPath: string | null
   depth: number
+  renamingPath: string | null
 }>()
 
 const emit = defineEmits<{
   select: [entry: FileEntry]
   contextmenu: [event: MouseEvent, entry: FileEntry]
+  renameComplete: [oldPath: string, newPath: string | null]
 }>()
 
 const children = ref<FileEntry[]>([])
@@ -57,6 +59,25 @@ if (props.entry.isDirectory && isExpanded.value) {
   loadChildren()
 }
 
+// Watch for rename trigger from parent
+watch(() => props.renamingPath, (newVal) => {
+  if (newVal === props.entry.path) {
+    startRename()
+  }
+})
+
+function handleChildSelect(entry: FileEntry) {
+  emit('select', entry)
+}
+
+function handleChildContextMenu(event: MouseEvent, entry: FileEntry) {
+  emit('contextmenu', event, entry)
+}
+
+function handleChildRenameComplete(oldPath: string, newPath: string | null) {
+  emit('renameComplete', oldPath, newPath)
+}
+
 function handleRenameKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter') {
     confirmRename()
@@ -73,13 +94,16 @@ function startRename() {
 async function confirmRename() {
   if (!showRenameInput.value) return
   showRenameInput.value = false
+  let newPath: string | null = null
   if (renameValue.value && renameValue.value !== props.entry.name) {
-    await window.api.rename(props.entry.path, renameValue.value)
+    newPath = await window.api.rename(props.entry.path, renameValue.value)
   }
+  emit('renameComplete', props.entry.path, newPath)
 }
 
 function cancelRename() {
   showRenameInput.value = false
+  emit('renameComplete', props.entry.path, null)
 }
 
 defineExpose({ startRename })
@@ -151,9 +175,11 @@ defineExpose({ startRename })
         :entry="child"
         :expanded="expanded"
         :selected-path="selectedPath"
+        :renaming-path="renamingPath"
         :depth="depth + 1"
-        @select="(e: FileEntry) => emit('select', e)"
-        @contextmenu="(event: MouseEvent, e: FileEntry) => emit('contextmenu', event, e)"
+        @select="handleChildSelect"
+        @contextmenu="handleChildContextMenu"
+        @rename-complete="handleChildRenameComplete"
       />
     </div>
   </div>

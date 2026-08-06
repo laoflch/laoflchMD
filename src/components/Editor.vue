@@ -68,34 +68,36 @@ function onTextareaKeydown(event: KeyboardEvent) {
   }
 }
 
-let isSyncing = false
+// Track last synced ratios to prevent circular sync
+let lastEditorRatio = -1
+let lastPreviewRatio = -1
 
 function syncEditorToPreview() {
-  if (isSyncing) return
-  isSyncing = true
-
   const textarea = document.querySelector('.editor-textarea') as HTMLTextAreaElement
   const preview = document.querySelector('.preview-pane') as HTMLElement
-  if (textarea && preview && textarea.scrollHeight > textarea.clientHeight) {
-    const ratio = textarea.scrollTop / (textarea.scrollHeight - textarea.clientHeight)
+  if (!textarea || !preview || textarea.scrollHeight <= textarea.clientHeight) return
+
+  const ratio = textarea.scrollTop / (textarea.scrollHeight - textarea.clientHeight)
+  // Only sync if the ratio actually changed (avoid circular loop)
+  if (Math.abs(ratio - lastPreviewRatio) > 0.001) {
+    lastPreviewRatio = ratio
+    lastEditorRatio = ratio
     preview.scrollTop = ratio * (preview.scrollHeight - preview.clientHeight)
   }
-
-  isSyncing = false
 }
 
 function syncPreviewToEditor() {
-  if (isSyncing) return
-  isSyncing = true
-
   const textarea = document.querySelector('.editor-textarea') as HTMLTextAreaElement
   const preview = document.querySelector('.preview-pane') as HTMLElement
-  if (preview && textarea && preview.scrollHeight > preview.clientHeight) {
-    const ratio = preview.scrollTop / (preview.scrollHeight - preview.clientHeight)
+  if (!preview || !textarea || preview.scrollHeight <= preview.clientHeight) return
+
+  const ratio = preview.scrollTop / (preview.scrollHeight - preview.clientHeight)
+  // Only sync if the ratio actually changed (avoid circular loop)
+  if (Math.abs(ratio - lastEditorRatio) > 0.001) {
+    lastEditorRatio = ratio
+    lastPreviewRatio = ratio
     textarea.scrollTop = ratio * (textarea.scrollHeight - textarea.clientHeight)
   }
-
-  isSyncing = false
 }
 </script>
 
@@ -310,6 +312,10 @@ function syncPreviewToEditor() {
   border-radius: 3px;
   padding: 0.2em 0.4em;
   font-size: 85%;
+}
+
+/* Inline code (not inside pre/code blocks) */
+:deep(.markdown-body :not(pre) > code) {
   color: var(--text-primary);
 }
 
@@ -324,10 +330,36 @@ function syncPreviewToEditor() {
   padding: 16px;
   overflow-x: auto;
   line-height: 1.45;
-  background: var(--code-bg);
   border-radius: 6px;
   font-size: 13px;
   font-variant-ligatures: none;
+}
+
+:deep(.markdown-body pre code.hljs) {
+  background: var(--code-bg);
+}
+
+/* Ensure highlight.js syntax colors are applied with proper specificity */
+:deep(.markdown-body .hljs) {
+  color: inherit;
+}
+:deep(.markdown-body .hljs-keyword) {
+  color: #d73a49 !important;
+}
+:deep(.markdown-body .hljs-string) {
+  color: #032f62 !important;
+}
+:deep(.markdown-body .hljs-comment) {
+  color: #6a737d !important;
+}
+:deep(.markdown-body .hljs-title.function_) {
+  color: #6f42c1 !important;
+}
+:deep(.markdown-body .hljs-number) {
+  color: #005cc5 !important;
+}
+:deep(.markdown-body .hljs-built_in) {
+  color: #e36209 !important;
 }
 
 :deep(.markdown-body blockquote) {
