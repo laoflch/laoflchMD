@@ -2,6 +2,81 @@
 const electron = require("electron");
 const path = require("path");
 const fs = require("fs");
+const clientS3 = require("@aws-sdk/client-s3");
+function createClient(config) {
+  return new clientS3.S3Client({
+    endpoint: config.endpoint || void 0,
+    region: config.region || "us-east-1",
+    // 使用路径式寻址，兼容 MinIO 等自建 S3 兼容存储
+    forcePathStyle: true,
+    credentials: {
+      accessKeyId: config.accessKeyId,
+      secretAccessKey: config.secretAccessKey
+    }
+  });
+}
+function isMarkdownKey(key) {
+  return /\.(md|markdown|mdown)$/i.test(key);
+}
+function safeDecodeKey(key) {
+  try {
+    return decodeURIComponent(key);
+  } catch {
+    return key;
+  }
+}
+function registerS3Handlers() {
+  electron.ipcMain.handle("s3:listBuckets", async (_event, config) => {
+    const client = createClient(config);
+    const res = await client.send(new clientS3.ListBucketsCommand({}));
+    return (res.Buckets || []).filter((b) => b.Name).map((b) => ({
+      name: b.Name,
+      creationDate: b.CreationDate ? b.CreationDate.toISOString() : null
+    }));
+  });
+  electron.ipcMain.handle(
+    "s3:listObjects",
+    async (_event, config, bucket, prefix) => {
+      const client = createClient(config);
+      const res = await client.send(
+        new clientS3.ListObjectsV2Command({
+          Bucket: bucket,
+          Prefix: prefix,
+          Delimiter: "/"
+        })
+      );
+      const folders = (res.CommonPrefixes || []).map((cp) => safeDecodeKey(cp.Prefix || "")).filter(Boolean);
+      const files = (res.Contents || []).filter((o) => o.Key && o.Key !== prefix).map((o) => {
+        const key = safeDecodeKey(o.Key);
+        return {
+          key,
+          name: key.split("/").pop() || "",
+          size: o.Size || 0,
+          lastModified: o.LastModified ? o.LastModified.toISOString() : null,
+          isMarkdown: isMarkdownKey(key)
+        };
+      });
+      return { folders, files };
+    }
+  );
+  electron.ipcMain.handle(
+    "s3:getObject",
+    async (_event, config, bucket, key) => {
+      const client = createClient(config);
+      const res = await client.send(new clientS3.GetObjectCommand({ Bucket: bucket, Key: key }));
+      const content = await res.Body?.transformToString("utf-8");
+      return content ?? null;
+    }
+  );
+  electron.ipcMain.handle(
+    "s3:putObject",
+    async (_event, config, bucket, key, content) => {
+      const client = createClient(config);
+      await client.send(new clientS3.PutObjectCommand({ Bucket: bucket, Key: key, Body: content }));
+      return { key };
+    }
+  );
+}
 let mainWindow = null;
 function createWindow() {
   mainWindow = new electron.BrowserWindow({
@@ -406,6 +481,7 @@ function getExportStyles() {
 }
 electron.app.whenReady().then(() => {
   createWindow();
+  registerS3Handlers();
   electron.app.on("activate", () => {
     if (electron.BrowserWindow.getAllWindows().length === 0) {
       createWindow();

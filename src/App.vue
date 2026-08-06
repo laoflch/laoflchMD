@@ -4,19 +4,25 @@ import { useEditorStore } from './stores/editor'
 import TitleBar from './components/TitleBar.vue'
 import Toolbar from './components/Toolbar.vue'
 import Editor from './components/Editor.vue'
-import FileTree from './components/FileTree.vue'
+import Sidebar from './components/Sidebar.vue'
 // Import highlight.js CSS theme for code syntax highlighting
 import 'highlight.js/styles/github.css'
 
 const store = useEditorStore()
 const showSidebar = ref(false)
-const fileTreeRef = ref<InstanceType<typeof FileTree> | null>(null)
+const sidebarTab = ref<'files' | 's3'>('files')
 
 // Listen for menu events from Electron main process
 const cleanupFns: (() => void)[] = []
 
 function toggleSidebar() {
   showSidebar.value = !showSidebar.value
+}
+
+// 从工具栏跳转到 S3 面板
+function openS3Panel() {
+  sidebarTab.value = 's3'
+  showSidebar.value = true
 }
 
 onMounted(async () => {
@@ -77,12 +83,12 @@ watch(() => store.fileName, (name) => {
 <template>
   <div class="app" :class="{ 'dark-theme': store.isDarkTheme }">
     <TitleBar />
-    <Toolbar @toggle-sidebar="toggleSidebar" :show-sidebar="showSidebar" />
+    <Toolbar @toggle-sidebar="toggleSidebar" @save-as-s3="openS3Panel" :show-sidebar="showSidebar" />
     <div class="main-content">
       <transition name="sidebar">
-        <FileTree
+        <Sidebar
           v-if="showSidebar"
-          ref="fileTreeRef"
+          v-model="sidebarTab"
           @close="showSidebar = false"
         />
       </transition>

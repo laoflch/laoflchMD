@@ -6,10 +6,6 @@ import TreeNodeItem from './TreeNodeItem.vue'
 
 const store = useEditorStore()
 
-const emit = defineEmits<{
-  close: []
-}>()
-
 const rootDir = ref<string | null>(null)
 const treeData = ref<FileEntry[]>([])
 const expanded = ref<Set<string>>(new Set())
@@ -211,22 +207,14 @@ defineExpose({ refreshTree, openDir })
 </script>
 
 <template>
-  <div class="file-tree-sidebar" :class="{ 'dark-theme': store.isDarkTheme }" @contextmenu.prevent>
-    <!-- Header -->
-    <div class="sidebar-header">
-      <span class="sidebar-title">文件导航</span>
-      <div class="sidebar-actions">
-        <button class="icon-btn" title="打开文件夹" @click="openDirectory">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M1.5 3.5a1 1 0 0 1 1-1h3.172a1 1 0 0 1 .707.293L7.5 3.914H13.5a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1V3.5Z"/>
-          </svg>
-        </button>
-        <button class="icon-btn" title="关闭侧边栏" @click="emit('close')">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
-          </svg>
-        </button>
-      </div>
+  <div class="file-tree-panel" :class="{ 'dark-theme': store.isDarkTheme }" @contextmenu.prevent>
+    <!-- Toolbar -->
+    <div class="panel-toolbar">
+      <button class="icon-btn" title="打开文件夹" @click="openDirectory">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M1.5 3.5a1 1 0 0 1 1-1h3.172a1 1 0 0 1 .707.293L7.5 3.914H13.5a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1V3.5Z"/>
+        </svg>
+      </button>
     </div>
 
     <!-- Root path display -->
@@ -311,40 +299,22 @@ defineExpose({ refreshTree, openDir })
 </template>
 
 <style scoped>
-.file-tree-sidebar {
-  width: 260px;
-  min-width: 200px;
+.file-tree-panel {
+  flex: 1;
+  min-height: 0;
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: var(--bg-secondary);
-  border-right: 1px solid var(--border-color);
   font-size: 13px;
   user-select: none;
-  position: relative;
   overflow: hidden;
 }
 
-.sidebar-header {
+.panel-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border-color);
+  padding: 6px 12px;
   flex-shrink: 0;
-}
-
-.sidebar-title {
-  font-weight: 600;
-  font-size: 12px;
-  text-transform: uppercase;
-  color: var(--text-secondary);
-  letter-spacing: 0.5px;
-}
-
-.sidebar-actions {
-  display: flex;
-  gap: 4px;
 }
 
 .icon-btn {

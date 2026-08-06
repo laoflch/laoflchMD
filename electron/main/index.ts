@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu, nativeTheme } from 'electron'
 import { join, dirname, basename } from 'path'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, renameSync, unlinkSync, rmdirSync } from 'fs'
+import { registerS3Handlers } from './s3'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -481,6 +482,7 @@ function getExportStyles(): string {
 
 app.whenReady().then(() => {
   createWindow()
+  registerS3Handlers()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

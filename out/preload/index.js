@@ -1,6 +1,11 @@
 "use strict";
 const electron = require("electron");
 electron.contextBridge.exposeInMainWorld("api", {
+  // S3 object storage operations
+  s3ListBuckets: (config) => electron.ipcRenderer.invoke("s3:listBuckets", config),
+  s3ListObjects: (config, bucket, prefix) => electron.ipcRenderer.invoke("s3:listObjects", config, bucket, prefix),
+  s3GetObject: (config, bucket, key) => electron.ipcRenderer.invoke("s3:getObject", config, bucket, key),
+  s3PutObject: (config, bucket, key, content) => electron.ipcRenderer.invoke("s3:putObject", config, bucket, key, content),
   // File operations
   openFile: () => electron.ipcRenderer.invoke("dialog:openFile"),
   saveFile: (content, filePath) => electron.ipcRenderer.invoke("dialog:saveFile", content, filePath),

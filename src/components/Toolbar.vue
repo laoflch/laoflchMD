@@ -9,6 +9,7 @@ defineProps<{
 
 defineEmits<{
   'toggle-sidebar': []
+  'save-as-s3': []
 }>()
 
 const viewModes: { value: ViewMode; label: string; icon: string }[] = [
@@ -80,6 +81,15 @@ async function handleSaveAs() {
       <button class="tool-btn" title="另存为 (Ctrl+Shift+S)" @click="handleSaveAs">
         <span class="tool-icon">💿</span>
         <span class="tool-label">另存为</span>
+      </button>
+      <button class="tool-btn" title="另存为到 S3 对象存储" @click="$emit('save-as-s3')">
+        <span class="tool-icon">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M12 2 4 5.5v6c0 4.5 3.4 8.4 8 10 4.6-1.6 8-5.5 8-10v-6L12 2z"/>
+            <path d="M4 5.5 12 9l8-3.5M12 9v10.5"/>
+          </svg>
+        </span>
+        <span class="tool-label">另存为S3</span>
       </button>
     </div>
 

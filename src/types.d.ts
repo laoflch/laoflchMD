@@ -1,8 +1,39 @@
 export {}
 
 declare global {
+  interface S3Config {
+    endpoint?: string
+    region?: string
+    accessKeyId: string
+    secretAccessKey: string
+  }
+
+  interface S3Bucket {
+    name: string
+    creationDate: string | null
+  }
+
+  interface S3ObjectEntry {
+    key: string
+    name: string
+    size: number
+    lastModified: string | null
+    isMarkdown: boolean
+  }
+
+  interface S3Listing {
+    folders: string[]
+    files: S3ObjectEntry[]
+  }
+
   interface Window {
     api: {
+      // S3 object storage operations
+      s3ListBuckets: (config: S3Config) => Promise<S3Bucket[]>
+      s3ListObjects: (config: S3Config, bucket: string, prefix: string) => Promise<S3Listing>
+      s3GetObject: (config: S3Config, bucket: string, key: string) => Promise<string | null>
+      s3PutObject: (config: S3Config, bucket: string, key: string, content: string) => Promise<{ key: string }>
+
       // File operations
       openFile: () => Promise<{ content: string; filePath: string } | null>
       saveFile: (content: string, filePath?: string) => Promise<string | null>

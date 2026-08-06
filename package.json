@@ -14,22 +14,23 @@
     "build:linux": "/workspace/nodejs/node-v22.14.0-linux-x64/bin/node ./node_modules/electron-vite/dist/cli.cjs build && /workspace/nodejs/node-v22.14.0-linux-x64/bin/node ./node_modules/electron-builder/cli.js --linux"
   },
   "dependencies": {
-    "vue": "^3.5.39",
-    "pinia": "^3.0.4",
-    "markdown-it": "^14.2.0",
+    "@aws-sdk/client-s3": "^3.1104.0",
     "highlight.js": "^11.11.1",
+    "markdown-it": "^14.2.0",
+    "markdown-it-table-of-contents": "^1.2.0",
     "markdown-it-task-lists": "^2.1.1",
-    "markdown-it-table-of-contents": "^1.2.0"
+    "pinia": "^3.0.4",
+    "vue": "^3.5.39"
   },
   "devDependencies": {
-    "electron": "^35.7.0",
-    "electron-vite": "^2.3.0",
-    "electron-builder": "^26.15.3",
-    "@vitejs/plugin-vue": "^5.2.0",
-    "typescript": "^5.5.0",
-    "vue-tsc": "^2.2.0",
     "@types/markdown-it": "^14.1.2",
-    "vite": "^5.4.0"
+    "@vitejs/plugin-vue": "^5.2.0",
+    "electron": "^35.7.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^2.3.0",
+    "typescript": "^5.5.0",
+    "vite": "^5.4.0",
+    "vue-tsc": "^2.2.0"
   },
   "build": {
     "appId": "com.laoflch.md-editor",
@@ -38,15 +39,21 @@
       "output": "release"
     },
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "icon": "resources/icon.ico"
     },
     "mac": {
-      "target": ["dmg"],
+      "target": [
+        "dmg"
+      ],
       "icon": "resources/icon.icns"
     },
     "linux": {
-      "target": ["AppImage"],
+      "target": [
+        "AppImage"
+      ],
       "icon": "resources"
     },
     "electronDist": "node_modules/electron/dist"
