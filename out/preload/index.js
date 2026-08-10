@@ -1,11 +1,6 @@
 "use strict";
 const electron = require("electron");
 electron.contextBridge.exposeInMainWorld("api", {
-  // S3 object storage operations
-  s3ListBuckets: (config) => electron.ipcRenderer.invoke("s3:listBuckets", config),
-  s3ListObjects: (config, bucket, prefix) => electron.ipcRenderer.invoke("s3:listObjects", config, bucket, prefix),
-  s3GetObject: (config, bucket, key) => electron.ipcRenderer.invoke("s3:getObject", config, bucket, key),
-  s3PutObject: (config, bucket, key, content) => electron.ipcRenderer.invoke("s3:putObject", config, bucket, key, content),
   // File operations
   openFile: () => electron.ipcRenderer.invoke("dialog:openFile"),
   saveFile: (content, filePath) => electron.ipcRenderer.invoke("dialog:saveFile", content, filePath),
@@ -72,5 +67,11 @@ electron.contextBridge.exposeInMainWorld("api", {
     const handler = (_event, isDark) => callback(isDark);
     electron.ipcRenderer.on("system-theme-changed", handler);
     return () => electron.ipcRenderer.removeListener("system-theme-changed", handler);
-  }
+  },
+  // S3 operations
+  s3ListBuckets: (config) => electron.ipcRenderer.invoke("s3:listBuckets", config),
+  s3ListObjects: (config, bucket, prefix) => electron.ipcRenderer.invoke("s3:listObjects", config, bucket, prefix),
+  s3GetObject: (config, bucket, key) => electron.ipcRenderer.invoke("s3:getObject", config, bucket, key),
+  s3PutObject: (config, bucket, key, content) => electron.ipcRenderer.invoke("s3:putObject", config, bucket, key, content),
+  s3DeleteObject: (config, bucket, key) => electron.ipcRenderer.invoke("s3:deleteObject", config, bucket, key)
 });

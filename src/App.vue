@@ -19,12 +19,6 @@ function toggleSidebar() {
   showSidebar.value = !showSidebar.value
 }
 
-// 从工具栏跳转到 S3 面板
-function openS3Panel() {
-  sidebarTab.value = 's3'
-  showSidebar.value = true
-}
-
 onMounted(async () => {
   // Detect system theme and apply it
   if (window.api.getSystemTheme) {
@@ -38,23 +32,42 @@ onMounted(async () => {
     cleanupFns.push(cleanup)
   }
 
-  // Register menu event listeners (config-driven to avoid repetition)
-  const menuEventListeners: { register: (handler: () => void) => () => void; handler: () => void }[] = [
-    { register: window.api.onNewFile, handler: () => store.newFile() },
-    { register: window.api.onOpenFile, handler: () => store.openFile() },
-    { register: window.api.onSaveFile, handler: () => store.saveFile() },
-    { register: window.api.onSaveAsFile, handler: () => store.saveFileAs() },
-    { register: window.api.onExportHtml, handler: () => window.api.exportHtml(store.renderedHtml) },
-    { register: window.api.onExportPdf, handler: () => window.api.exportPdf(store.renderedHtml) },
-    { register: window.api.onToggleTheme, handler: () => store.toggleTheme() },
-    { register: window.api.onToggleSidebar, handler: () => toggleSidebar() }
-  ]
-
-  menuEventListeners.forEach(({ register, handler }) => {
-    if (typeof register === 'function') {
-      cleanupFns.push(register(handler))
-    }
-  })
+  if (window.api.onNewFile) {
+    const cleanup = window.api.onNewFile(() => store.newFile())
+    cleanupFns.push(cleanup)
+  }
+  if (window.api.onOpenFile) {
+    const cleanup = window.api.onOpenFile(() => store.openFile())
+    cleanupFns.push(cleanup)
+  }
+  if (window.api.onSaveFile) {
+    const cleanup = window.api.onSaveFile(() => store.saveFile())
+    cleanupFns.push(cleanup)
+  }
+  if (window.api.onSaveAsFile) {
+    const cleanup = window.api.onSaveAsFile(() => store.saveFileAs())
+    cleanupFns.push(cleanup)
+  }
+  if (window.api.onExportHtml) {
+    const cleanup = window.api.onExportHtml(() => {
+      window.api.exportHtml(store.renderedHtml)
+    })
+    cleanupFns.push(cleanup)
+  }
+  if (window.api.onExportPdf) {
+    const cleanup = window.api.onExportPdf(() => {
+      window.api.exportPdf(store.renderedHtml)
+    })
+    cleanupFns.push(cleanup)
+  }
+  if (window.api.onToggleTheme) {
+    const cleanup = window.api.onToggleTheme(() => store.toggleTheme())
+    cleanupFns.push(cleanup)
+  }
+  if (window.api.onToggleSidebar) {
+    const cleanup = window.api.onToggleSidebar(() => toggleSidebar())
+    cleanupFns.push(cleanup)
+  }
 })
 
 // Global keyboard shortcut for sidebar toggle
@@ -83,7 +96,7 @@ watch(() => store.fileName, (name) => {
 <template>
   <div class="app" :class="{ 'dark-theme': store.isDarkTheme }">
     <TitleBar />
-    <Toolbar @toggle-sidebar="toggleSidebar" @save-as-s3="openS3Panel" :show-sidebar="showSidebar" />
+    <Toolbar @toggle-sidebar="toggleSidebar" :show-sidebar="showSidebar" />
     <div class="main-content">
       <transition name="sidebar">
         <Sidebar

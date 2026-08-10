@@ -134,7 +134,7 @@ defineExpose({ startRename })
       <!-- Icon -->
       <span class="tree-icon">
         <!-- Directory icon -->
-        <svg v-if="entry.isDirectory" width="16" height="16" viewBox="0 0 16 16" :fill="isExpanded ? '#e0a800' : '#d4a017'">
+        <svg v-if="entry.isDirectory" width="16" height="16" viewBox="0 0 16 16" :fill="isExpanded ? '#4a9eff' : '#569cd6'">
           <path v-if="isExpanded" d="M1.5 3.5a1 1 0 0 1 1-1h3.172a1 1 0 0 1 .707.293L7.5 3.914H13.5a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1V3.5Z"/>
           <path v-else d="M.5 3.5a.5.5 0 0 1 .5-.5h4.793a.5.5 0 0 1 .353.146l1.5 1.5A.5.5 0 0 0 8 4.793h6.5a.5.5 0 0 1 .5.5v7.207a.5.5 0 0 1-.5.5H1a.5.5 0 0 1-.5-.5V3.5Z"/>
         </svg>

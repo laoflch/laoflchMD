@@ -24,7 +24,7 @@ function switchTab(tab: 'files' | 's3') {
         <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
           <path d="M1.5 3.5a1 1 0 0 1 1-1h3.172a1 1 0 0 1 .707.293L7.5 3.914H13.5a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1V3.5Z"/>
         </svg>
-        <span>文件导航</span>
+        <span>本地文件</span>
       </button>
       <button
         class="sidebar-tab"
@@ -35,7 +35,7 @@ function switchTab(tab: 'files' | 's3') {
           <path d="M12 2 4 5.5v6c0 4.5 3.4 8.4 8 10 4.6-1.6 8-5.5 8-10v-6L12 2z"/>
           <path d="M4 5.5 12 9l8-3.5M12 9v10.5"/>
         </svg>
-        <span>S3 访问</span>
+        <span>S3</span>
       </button>
       <button class="sidebar-close" title="关闭侧边栏" @click="emit('close')">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">

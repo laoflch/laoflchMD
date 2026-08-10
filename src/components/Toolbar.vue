@@ -9,7 +9,6 @@ defineProps<{
 
 defineEmits<{
   'toggle-sidebar': []
-  'save-as-s3': []
 }>()
 
 const viewModes: { value: ViewMode; label: string; icon: string }[] = [
@@ -67,29 +66,40 @@ async function handleSaveAs() {
 
     <div class="toolbar-group">
       <button class="tool-btn" title="新建 (Ctrl+N)" @click="handleNew">
-        <span class="tool-icon">📄</span>
+        <span class="tool-icon">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#569cd6" stroke-width="1.5">
+            <rect x="2" y="3" width="12" height="10" rx="1"/>
+            <path d="M8 6v4M6 8h4"/>
+          </svg>
+        </span>
         <span class="tool-label">新建</span>
       </button>
       <button class="tool-btn" title="打开 (Ctrl+O)" @click="handleOpen">
-        <span class="tool-icon">📂</span>
+        <span class="tool-icon">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#569cd6" stroke-width="1.5">
+            <path d="M1 4.5A1.5 1.5 0 0 1 2.5 3H6a1 1 0 0 1 .7.3l2 1.4a1 1 0 0 0 .7.3h5.1a.5.5 0 0 1 .5.5V12a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V4.5Z"/>
+          </svg>
+        </span>
         <span class="tool-label">打开</span>
       </button>
       <button class="tool-btn" title="保存 (Ctrl+S)" @click="handleSave">
-        <span class="tool-icon">💾</span>
+        <span class="tool-icon">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#569cd6" stroke-width="1.5">
+            <path d="M14.5 4.25V12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4.5a1.5 1.5 0 0 1 1.5-1.5H8l1.5 1.5h3a2 2 0 0 1 2 2.25Z"/>
+            <path d="M4 5h5v4H4z"/>
+          </svg>
+        </span>
         <span class="tool-label">保存</span>
       </button>
       <button class="tool-btn" title="另存为 (Ctrl+Shift+S)" @click="handleSaveAs">
-        <span class="tool-icon">💿</span>
-        <span class="tool-label">另存为</span>
-      </button>
-      <button class="tool-btn" title="另存为到 S3 对象存储" @click="$emit('save-as-s3')">
         <span class="tool-icon">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-            <path d="M12 2 4 5.5v6c0 4.5 3.4 8.4 8 10 4.6-1.6 8-5.5 8-10v-6L12 2z"/>
-            <path d="M4 5.5 12 9l8-3.5M12 9v10.5"/>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#569cd6" stroke-width="1.5">
+            <path d="M14.5 4.25V12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4.5a1.5 1.5 0 0 1 1.5-1.5H8l1.5 1.5h3a2 2 0 0 1 2 2.25Z"/>
+            <path d="M7 10V8h2v2h-2z"/>
+            <path d="M3.5 8h.01"/>
           </svg>
         </span>
-        <span class="tool-label">另存为S3</span>
+        <span class="tool-label">另存为</span>
       </button>
     </div>
 

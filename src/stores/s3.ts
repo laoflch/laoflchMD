@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import type { S3Config, S3Bucket, S3ObjectEntry } from '../types'
 
 const CONFIG_KEY = 'laoflchmd_s3_config'
 
@@ -126,7 +127,15 @@ export const useS3Store = defineStore('s3', () => {
 
   // 返回上一级
   async function goUp() {
-    if (!currentPrefix.value) return
+    // 在 bucket 根目录时，返回上一级 = 回到桶列表
+    if (!currentPrefix.value) {
+      currentBucket.value = null
+      currentPrefix.value = ''
+      folders.value = []
+      files.value = []
+      breadcrumb.value = []
+      return
+    }
     const trimmed = currentPrefix.value.replace(/\/$/, '')
     const idx = trimmed.lastIndexOf('/')
     currentPrefix.value = idx >= 0 ? trimmed.slice(0, idx + 1) : ''
@@ -161,6 +170,20 @@ export const useS3Store = defineStore('s3', () => {
     }
   }
 
+  // 删除对象
+  async function deleteObject(key: string): Promise<boolean> {
+    if (!currentBucket.value) return false
+    error.value = null
+    try {
+      await window.api.s3DeleteObject(plainConfig(), currentBucket.value, key)
+      await refreshListing()
+      return true
+    } catch (e: unknown) {
+      error.value = e instanceof Error ? e.message : '删除失败'
+      return false
+    }
+  }
+
   // 当前文件夹的完整前缀（用于默认保存键）
   function currentFolderKey(): string {
     return currentPrefix.value
@@ -189,6 +212,7 @@ export const useS3Store = defineStore('s3', () => {
     goUp,
     getObject,
     putObject,
+    deleteObject,
     currentFolderKey
   }
 })

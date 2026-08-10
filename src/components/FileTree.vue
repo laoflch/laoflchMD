@@ -6,6 +6,10 @@ import TreeNodeItem from './TreeNodeItem.vue'
 
 const store = useEditorStore()
 
+const emit = defineEmits<{
+  close: []
+}>()
+
 const rootDir = ref<string | null>(null)
 const treeData = ref<FileEntry[]>([])
 const expanded = ref<Set<string>>(new Set())
@@ -159,16 +163,13 @@ async function handleRename() {
 
 async function handleRenameComplete(oldPath: string, newPath: string | null) {
   renamingPath.value = null
-  if (!newPath) return
-  const currentFilePath = store.filePath
-  // If the renamed file itself was open, update the store file path
-  if (currentFilePath === oldPath) {
-    store.setFilePath(newPath)
-  } else if (currentFilePath && currentFilePath.startsWith(oldPath + '/')) {
-    // If a renamed ancestor directory of the open file was renamed, update the path accordingly
-    store.setFilePath(newPath + currentFilePath.slice(oldPath.length))
+  if (newPath) {
+    // If the renamed file was open, update the store file path
+    if (store.filePath === oldPath) {
+      store.setFilePath(newPath)
+    }
+    await refreshTree()
   }
-  await refreshTree()
 }
 
 // Click outside context menu to close it
@@ -207,22 +208,22 @@ defineExpose({ refreshTree, openDir })
 </script>
 
 <template>
-  <div class="file-tree-panel" :class="{ 'dark-theme': store.isDarkTheme }" @contextmenu.prevent>
-    <!-- Toolbar -->
-    <div class="panel-toolbar">
-      <button class="icon-btn" title="打开文件夹" @click="openDirectory">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+  <div class="file-tree-sidebar" :class="{ 'dark-theme': store.isDarkTheme }" @contextmenu.prevent>
+    <!-- Header: 目录名 + 打开文件夹按钮 -->
+    <div class="sidebar-header">
+      <div class="root-path" :title="rootDir || ''">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
           <path d="M1.5 3.5a1 1 0 0 1 1-1h3.172a1 1 0 0 1 .707.293L7.5 3.914H13.5a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1V3.5Z"/>
         </svg>
-      </button>
-    </div>
-
-    <!-- Root path display -->
-    <div class="root-path" :title="rootDir || ''">
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-        <path d="M1.5 3.5a1 1 0 0 1 1-1h3.172a1 1 0 0 1 .707.293L7.5 3.914H13.5a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1V3.5Z"/>
-      </svg>
-      <span class="root-path-text">{{ rootDir ? rootDir.split('/').pop() || rootDir : '未打开文件夹' }}</span>
+        <span class="root-path-text">{{ rootDir ? rootDir.split('/').pop() || rootDir : '未打开文件夹' }}</span>
+      </div>
+      <div class="sidebar-actions">
+        <button class="icon-btn" title="打开文件夹" @click="openDirectory">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M1.5 3.5a1 1 0 0 1 1-1h3.172a1 1 0 0 1 .707.293L7.5 3.914H13.5a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1V3.5Z"/>
+          </svg>
+        </button>
+      </div>
     </div>
 
     <!-- Loading indicator -->
@@ -299,21 +300,33 @@ defineExpose({ refreshTree, openDir })
 </template>
 
 <style scoped>
-.file-tree-panel {
-  flex: 1;
-  min-height: 0;
+.file-tree-sidebar {
+  width: 260px;
+  min-width: 200px;
   height: 100%;
   display: flex;
   flex-direction: column;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border-color);
   font-size: 13px;
   user-select: none;
+  position: relative;
   overflow: hidden;
 }
 
-.panel-toolbar {
+.sidebar-header {
   display: flex;
   align-items: center;
-  padding: 6px 12px;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.sidebar-actions {
+  display: flex;
+  gap: 4px;
   flex-shrink: 0;
 }
 
@@ -340,11 +353,10 @@ defineExpose({ refreshTree, openDir })
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
   color: var(--text-muted);
   font-size: 12px;
-  border-bottom: 1px solid var(--border-color);
-  flex-shrink: 0;
+  flex: 1;
+  min-width: 0;
 }
 
 .root-path-text {

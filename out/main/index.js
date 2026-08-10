@@ -4,8 +4,13 @@ const path = require("path");
 const fs = require("fs");
 const clientS3 = require("@aws-sdk/client-s3");
 function createClient(config) {
+  let endpoint = config.endpoint || void 0;
+  if (endpoint && !endpoint.startsWith("http")) {
+    endpoint = "http://" + endpoint;
+  }
+  console.log("S3 client config:", { endpoint, region: config.region, accessKeyId: config.accessKeyId });
   return new clientS3.S3Client({
-    endpoint: config.endpoint || void 0,
+    endpoint,
     region: config.region || "us-east-1",
     // 使用路径式寻址，兼容 MinIO 等自建 S3 兼容存储
     forcePathStyle: true,
@@ -27,53 +32,92 @@ function safeDecodeKey(key) {
 }
 function registerS3Handlers() {
   electron.ipcMain.handle("s3:listBuckets", async (_event, config) => {
-    const client = createClient(config);
-    const res = await client.send(new clientS3.ListBucketsCommand({}));
-    return (res.Buckets || []).filter((b) => b.Name).map((b) => ({
-      name: b.Name,
-      creationDate: b.CreationDate ? b.CreationDate.toISOString() : null
-    }));
+    try {
+      const client = createClient(config);
+      const res = await client.send(new clientS3.ListBucketsCommand({}));
+      return (res.Buckets || []).filter((b) => b.Name).map((b) => ({
+        name: b.Name,
+        creationDate: b.CreationDate ? b.CreationDate.toISOString() : null
+      }));
+    } catch (e) {
+      console.error("s3:listBuckets error:", e);
+      const errMsg = e.message || e.toString && e.toString() || "未知错误";
+      throw new Error(errMsg);
+    }
   });
   electron.ipcMain.handle(
     "s3:listObjects",
     async (_event, config, bucket, prefix) => {
-      const client = createClient(config);
-      const res = await client.send(
-        new clientS3.ListObjectsV2Command({
-          Bucket: bucket,
-          Prefix: prefix,
-          Delimiter: "/"
-        })
-      );
-      const folders = (res.CommonPrefixes || []).map((cp) => safeDecodeKey(cp.Prefix || "")).filter(Boolean);
-      const files = (res.Contents || []).filter((o) => o.Key && o.Key !== prefix).map((o) => {
-        const key = safeDecodeKey(o.Key);
-        return {
-          key,
-          name: key.split("/").pop() || "",
-          size: o.Size || 0,
-          lastModified: o.LastModified ? o.LastModified.toISOString() : null,
-          isMarkdown: isMarkdownKey(key)
-        };
-      });
-      return { folders, files };
+      try {
+        const client = createClient(config);
+        const res = await client.send(
+          new clientS3.ListObjectsV2Command({
+            Bucket: bucket,
+            Prefix: prefix,
+            Delimiter: "/"
+          })
+        );
+        const folders = (res.CommonPrefixes || []).map((cp) => safeDecodeKey(cp.Prefix || "")).filter(Boolean);
+        const files = (res.Contents || []).filter((o) => o.Key && o.Key !== prefix).filter((o) => isMarkdownKey(o.Key)).map((o) => {
+          const key = safeDecodeKey(o.Key);
+          return {
+            key,
+            name: key.split("/").pop() || "",
+            size: o.Size || 0,
+            lastModified: o.LastModified ? o.LastModified.toISOString() : null,
+            eTag: o.ETag,
+            isMarkdown: true
+          };
+        });
+        return { folders, files };
+      } catch (e) {
+        console.error("s3:listObjects error:", e);
+        const errMsg = e.message || e.toString && e.toString() || "未知错误";
+        throw new Error(errMsg);
+      }
     }
   );
   electron.ipcMain.handle(
     "s3:getObject",
     async (_event, config, bucket, key) => {
-      const client = createClient(config);
-      const res = await client.send(new clientS3.GetObjectCommand({ Bucket: bucket, Key: key }));
-      const content = await res.Body?.transformToString("utf-8");
-      return content ?? null;
+      try {
+        const client = createClient(config);
+        const res = await client.send(new clientS3.GetObjectCommand({ Bucket: bucket, Key: key }));
+        const content = await res.Body?.transformToString("utf-8");
+        return content ?? null;
+      } catch (e) {
+        console.error("s3:getObject error:", e);
+        const errMsg = e.message || e.toString && e.toString() || "未知错误";
+        throw new Error(errMsg);
+      }
     }
   );
   electron.ipcMain.handle(
     "s3:putObject",
     async (_event, config, bucket, key, content) => {
-      const client = createClient(config);
-      await client.send(new clientS3.PutObjectCommand({ Bucket: bucket, Key: key, Body: content }));
-      return { key };
+      try {
+        const client = createClient(config);
+        await client.send(new clientS3.PutObjectCommand({ Bucket: bucket, Key: key, Body: content }));
+        return { key };
+      } catch (e) {
+        console.error("s3:putObject error:", e);
+        const errMsg = e.message || e.toString && e.toString() || "未知错误";
+        throw new Error(errMsg);
+      }
+    }
+  );
+  electron.ipcMain.handle(
+    "s3:deleteObject",
+    async (_event, config, bucket, key) => {
+      try {
+        const client = createClient(config);
+        await client.send(new clientS3.DeleteObjectCommand({ Bucket: bucket, Key: key }));
+        return true;
+      } catch (e) {
+        console.error("s3:deleteObject error:", e);
+        const errMsg = e.message || e.toString && e.toString() || "未知错误";
+        throw new Error(errMsg);
+      }
     }
   );
 }

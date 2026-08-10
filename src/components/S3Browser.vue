@@ -2,9 +2,53 @@
 import { ref } from 'vue'
 import { useS3Store } from '../stores/s3'
 import { useEditorStore } from '../stores/editor'
+import type { S3ObjectEntry } from '../types'
 
 const s3 = useS3Store()
 const editor = useEditorStore()
+
+// 右键菜单
+const contextMenu = ref({ show: false, x: 0, y: 0 })
+const currentFile = ref<S3ObjectEntry | null>(null)
+const showDetailsDialog = ref(false)
+
+function showContextMenu(e: MouseEvent, file: S3ObjectEntry) {
+  currentFile.value = file
+  contextMenu.value = { show: true, x: e.clientX, y: e.clientY }
+}
+
+function hideContextMenu() {
+  contextMenu.value.show = false
+}
+
+function showFileDetails() {
+  hideContextMenu()
+  showDetailsDialog.value = true
+}
+
+async function deleteFile() {
+  if (!currentFile.value) return
+  hideContextMenu()
+  const confirmed = confirm(`确定要删除文件 "${currentFile.value.name}" 吗？`)
+  if (confirmed) {
+    await s3.deleteObject(currentFile.value.key)
+  }
+}
+
+function formatSize(bytes: number | undefined): string {
+  if (bytes === undefined) return '-'
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  let i = 0
+  let size = bytes
+  while (size >= 1024 && i < sizes.length - 1) {
+    size /= 1024
+    i++
+  }
+  return size.toFixed(1) + ' ' + sizes[i]
+}
+
+// 点击其他地方关闭右键菜单
+document.addEventListener('click', hideContextMenu)
 
 // 打开对象到编辑器（Markdown 文本）
 async function openObject(entry: S3ObjectEntry) {
@@ -95,12 +139,6 @@ async function doSave() {
 
     <!-- 已连接 -->
     <template v-else>
-      <!-- 顶部工具条 -->
-      <div class="s3-toolbar">
-        <button class="s3-btn" title="重新连接" @click="s3.connect">重连</button>
-        <button class="s3-btn primary" title="将当前编辑内容另存到 S3" @click="openSaveDialog">另存为到S3</button>
-      </div>
-
       <!-- 选择桶 -->
       <div v-if="!s3.currentBucket" class="s3-list">
         <div class="s3-list-title">桶（Buckets）</div>
@@ -122,16 +160,22 @@ async function doSave() {
       <!-- 对象浏览 -->
       <div v-else class="s3-browse">
         <!-- 面包屑 -->
-        <div class="s3-breadcrumb">
-          <button class="s3-crumb" @click="s3.goUp">…</button>
-          <span class="s3-crumb-sep">/</span>
-          <button class="s3-crumb" @click="s3.openBucket(s3.currentBucket)">
-            {{ s3.currentBucket }}
-          </button>
-          <template v-for="(seg, i) in s3.breadcrumb" :key="i">
+        <div class="s3-breadcrumb-row">
+          <div class="s3-breadcrumb">
+            <button class="s3-crumb" @click="s3.goUp">…</button>
             <span class="s3-crumb-sep">/</span>
-            <button class="s3-crumb" @click="goToBreadcrumb(i)">{{ decodeName(seg) }}</button>
-          </template>
+            <button class="s3-crumb" @click="s3.openBucket(s3.currentBucket)">
+              {{ s3.currentBucket }}
+            </button>
+            <template v-for="(seg, i) in s3.breadcrumb" :key="i">
+              <span class="s3-crumb-sep">/</span>
+              <button class="s3-crumb" @click="goToBreadcrumb(i)">{{ decodeName(seg) }}</button>
+            </template>
+          </div>
+          <div class="s3-toolbar">
+            <button class="s3-btn" title="重新连接" @click="s3.connect">重连</button>
+            <button class="s3-btn primary" title="将当前编辑内容另存到 S3" @click="openSaveDialog">另存S3</button>
+          </div>
         </div>
 
         <div class="s3-list">
@@ -156,6 +200,7 @@ async function doSave() {
               :class="{ 's3-item-file': !file.isMarkdown, 's3-item-openable': file.isMarkdown }"
               :title="file.key"
               @click="file.isMarkdown && openObject(file)"
+              @contextmenu.prevent="showContextMenu($event, file)"
             >
               <svg v-if="file.isMarkdown" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/>
@@ -181,6 +226,59 @@ async function doSave() {
       {{ s3.notice }}
     </div>
     <div v-if="s3.error" class="s3-error" @click="s3.clearError()">{{ s3.error }}</div>
+
+    <!-- 右键菜单 -->
+    <div
+      v-if="contextMenu.show"
+      class="s3-context-menu"
+      :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+    >
+      <div class="s3-context-menu-item" @click="showFileDetails">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+          <path d="M1 12h14M12 5l7 7-7 7"/>
+        </svg>
+        显示详情
+      </div>
+      <div class="s3-context-menu-divider"></div>
+      <div class="s3-context-menu-item danger" @click="deleteFile">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+          <path d="M3 6h18M8 6v14a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V6M10 6V4a2 2 0 0 1 2-2h0a2 2 0 0 1 2 2v2"/>
+        </svg>
+        删除
+      </div>
+    </div>
+
+    <!-- 文件详情对话框 -->
+    <div v-if="showDetailsDialog" class="s3-modal-mask" @click.self="showDetailsDialog = false">
+      <div class="s3-modal">
+        <h4>文件详情</h4>
+        <div class="s3-details">
+          <div class="s3-detail-row">
+            <span class="s3-detail-label">文件名</span>
+            <span class="s3-detail-value">{{ currentFile?.name }}</span>
+          </div>
+          <div class="s3-detail-row">
+            <span class="s3-detail-label">对象键（Key）</span>
+            <span class="s3-detail-value">{{ currentFile?.key }}</span>
+          </div>
+          <div class="s3-detail-row">
+            <span class="s3-detail-label">大小</span>
+            <span class="s3-detail-value">{{ formatSize(currentFile?.size) }}</span>
+          </div>
+          <div class="s3-detail-row">
+            <span class="s3-detail-label">最后修改</span>
+            <span class="s3-detail-value">{{ currentFile?.lastModified }}</span>
+          </div>
+          <div v-if="currentFile?.eTag" class="s3-detail-row">
+            <span class="s3-detail-label">ETag</span>
+            <span class="s3-detail-value">{{ currentFile.eTag }}</span>
+          </div>
+        </div>
+        <div class="s3-modal-actions">
+          <button class="s3-btn" @click="showDetailsDialog = false">关闭</button>
+        </div>
+      </div>
+    </div>
 
     <!-- 另存为对话框 -->
     <div v-if="showSaveDialog" class="s3-modal-mask" @click.self="showSaveDialog = false">
@@ -265,6 +363,7 @@ async function doSave() {
 
 .s3-toolbar {
   display: flex;
+  justify-content: flex-end;
   gap: 8px;
   margin-bottom: 8px;
   flex-shrink: 0;
@@ -357,18 +456,24 @@ async function doSave() {
   min-height: 0;
 }
 
+.s3-breadcrumb-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0 8px;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .s3-breadcrumb {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 2px;
-  padding: 4px 0 8px;
-  border-bottom: 1px solid var(--border-color);
-  margin-bottom: 6px;
-  font-size: 12px;
-  flex-shrink: 0;
+  flex: 1;
+  min-width: 0;
 }
-
 .s3-crumb {
   background: none;
   border: none;
@@ -377,23 +482,19 @@ async function doSave() {
   padding: 2px 4px;
   border-radius: 3px;
   font-size: 12px;
+  white-space: nowrap;
 }
-
 .s3-crumb:hover {
   color: var(--accent-color);
   background: var(--bg-tertiary);
 }
-
 .s3-crumb-sep {
   color: var(--text-muted);
 }
-
-.s3-loading,
-.s3-empty {
-  padding: 16px;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: 12px;
+.s3-toolbar {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .s3-error {
@@ -463,5 +564,65 @@ async function doSave() {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.s3-context-menu {
+  position: fixed;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  box-shadow: var(--shadow-md);
+  z-index: 200;
+  padding: 4px 0;
+  min-width: 140px;
+}
+
+.s3-context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.s3-context-menu-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.s3-context-menu-item.danger {
+  color: #dc3545;
+}
+
+.s3-context-menu-divider {
+  height: 1px;
+  background: var(--border-color);
+  margin: 4px 0;
+}
+
+.s3-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.s3-detail-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.s3-detail-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.s3-detail-value {
+  font-size: 12px;
+  color: var(--text-primary);
+  word-break: break-all;
 }
 </style>

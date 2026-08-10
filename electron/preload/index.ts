@@ -1,23 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
-// S3 连接配置
-interface S3Config {
-  endpoint?: string
-  region?: string
-  accessKeyId: string
-  secretAccessKey: string
-}
-
 contextBridge.exposeInMainWorld('api', {
-  // S3 object storage operations
-  s3ListBuckets: (config: S3Config) => ipcRenderer.invoke('s3:listBuckets', config),
-  s3ListObjects: (config: S3Config, bucket: string, prefix: string) =>
-    ipcRenderer.invoke('s3:listObjects', config, bucket, prefix),
-  s3GetObject: (config: S3Config, bucket: string, key: string) =>
-    ipcRenderer.invoke('s3:getObject', config, bucket, key),
-  s3PutObject: (config: S3Config, bucket: string, key: string, content: string) =>
-    ipcRenderer.invoke('s3:putObject', config, bucket, key, content),
-
   // File operations
   openFile: () => ipcRenderer.invoke('dialog:openFile'),
   saveFile: (content: string, filePath?: string) =>
@@ -89,5 +72,16 @@ contextBridge.exposeInMainWorld('api', {
     const handler = (_event: Electron.IpcRendererEvent, isDark: boolean) => callback(isDark)
     ipcRenderer.on('system-theme-changed', handler)
     return () => ipcRenderer.removeListener('system-theme-changed', handler)
-  }
+  },
+
+  // S3 operations
+  s3ListBuckets: (config: any) => ipcRenderer.invoke('s3:listBuckets', config),
+  s3ListObjects: (config: any, bucket: string, prefix: string) =>
+    ipcRenderer.invoke('s3:listObjects', config, bucket, prefix),
+  s3GetObject: (config: any, bucket: string, key: string) =>
+    ipcRenderer.invoke('s3:getObject', config, bucket, key),
+  s3PutObject: (config: any, bucket: string, key: string, content: string) =>
+    ipcRenderer.invoke('s3:putObject', config, bucket, key, content),
+  s3DeleteObject: (config: any, bucket: string, key: string) =>
+    ipcRenderer.invoke('s3:deleteObject', config, bucket, key)
 })
