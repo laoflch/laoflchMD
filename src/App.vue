@@ -5,12 +5,14 @@ import TitleBar from './components/TitleBar.vue'
 import Toolbar from './components/Toolbar.vue'
 import Editor from './components/Editor.vue'
 import Sidebar from './components/Sidebar.vue'
+import AboutDialog from './components/AboutDialog.vue'
 // Import highlight.js CSS theme for code syntax highlighting
 import 'highlight.js/styles/github.css'
 
 const store = useEditorStore()
 const showSidebar = ref(false)
 const sidebarTab = ref<'files' | 's3'>('files')
+const showAbout = ref(false)
 
 // Listen for menu events from Electron main process
 const cleanupFns: (() => void)[] = []
@@ -68,6 +70,10 @@ onMounted(async () => {
     const cleanup = window.api.onToggleSidebar(() => toggleSidebar())
     cleanupFns.push(cleanup)
   }
+  if (window.api.onAbout) {
+    const cleanup = window.api.onAbout(() => (showAbout.value = true))
+    cleanupFns.push(cleanup)
+  }
 })
 
 // Global keyboard shortcut for sidebar toggle
@@ -96,7 +102,7 @@ watch(() => store.fileName, (name) => {
 <template>
   <div class="app" :class="{ 'dark-theme': store.isDarkTheme }">
     <TitleBar />
-    <Toolbar @toggle-sidebar="toggleSidebar" :show-sidebar="showSidebar" />
+    <Toolbar @toggle-sidebar="toggleSidebar" :show-sidebar="showSidebar" @about="showAbout = true" />
     <div class="main-content">
       <transition name="sidebar">
         <Sidebar
@@ -107,6 +113,7 @@ watch(() => store.fileName, (name) => {
       </transition>
       <Editor />
     </div>
+    <AboutDialog :open="showAbout" @close="showAbout = false" />
   </div>
 </template>
 
@@ -170,6 +177,7 @@ watch(() => store.fileName, (name) => {
   /* Light theme */
   --bg-primary: #ffffff;
   --bg-secondary: #f5f5f5;
+  --bg-sidebar: #f8f8f8;
   --bg-tertiary: #e8e8e8;
   --bg-toolbar: #fafafa;
   --bg-titlebar: #ececec;
@@ -191,8 +199,9 @@ watch(() => store.fileName, (name) => {
 }
 
 .dark-theme {
-  --bg-primary: #1e1e1e;
-  --bg-secondary: #252526;
+  --bg-primary: #202125;
+  --bg-secondary: #282828;
+  --bg-sidebar: #2d2d2d;
   --bg-tertiary: #2d2d2d;
   --bg-toolbar: #2d2d2d;
   --bg-titlebar: #1a1a1a;

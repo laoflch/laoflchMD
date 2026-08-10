@@ -61,6 +61,11 @@ electron.contextBridge.exposeInMainWorld("api", {
     electron.ipcRenderer.on("menu-toggle-sidebar", callback);
     return () => electron.ipcRenderer.removeListener("menu-toggle-sidebar", callback);
   },
+  onAbout: (callback) => {
+    electron.ipcRenderer.on("menu-about", callback);
+    return () => electron.ipcRenderer.removeListener("menu-about", callback);
+  },
+  getAppInfo: () => electron.ipcRenderer.invoke("app:getInfo"),
   // System theme detection
   getSystemTheme: () => electron.ipcRenderer.invoke("getSystemTheme"),
   onSystemThemeChanged: (callback) => {

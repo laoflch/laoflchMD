@@ -306,8 +306,7 @@ defineExpose({ refreshTree, openDir })
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: var(--bg-secondary);
-  border-right: 1px solid var(--border-color);
+  background: transparent;
   font-size: 13px;
   user-select: none;
   position: relative;

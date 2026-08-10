@@ -9,6 +9,7 @@ defineProps<{
 
 defineEmits<{
   'toggle-sidebar': []
+  'about': []
 }>()
 
 const viewModes: { value: ViewMode; label: string; icon: string }[] = [
@@ -139,6 +140,15 @@ async function handleSaveAs() {
       <button class="tool-btn" title="切换主题 (Ctrl+Shift+T)" @click="store.toggleTheme()">
         <span class="tool-icon">{{ store.isDarkTheme ? '☀️' : '🌙' }}</span>
         <span class="tool-label">{{ store.isDarkTheme ? '亮色' : '暗色' }}</span>
+      </button>
+      <button class="tool-btn" title="关于 (Ctrl+Shift+A)" @click="$emit('about')">
+        <span class="tool-icon">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#569cd6" stroke-width="1.5">
+            <circle cx="8" cy="8" r="6.5"/>
+            <path d="M8 7.5V11M8 5.2v.01"/>
+          </svg>
+        </span>
+        <span class="tool-label">关于</span>
       </button>
     </div>
   </div>

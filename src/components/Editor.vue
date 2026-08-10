@@ -66,6 +66,22 @@ function onTextareaKeydown(event: KeyboardEvent) {
     event.preventDefault()
     store.insertText('*', '*')
   }
+
+  // Handle Ctrl+Z / Ctrl+Y for undo/redo
+  if (event.ctrlKey && event.key.toLowerCase() === 'z') {
+    event.preventDefault()
+    if (event.shiftKey) {
+      store.redo()
+    } else {
+      store.undo()
+    }
+  }
+
+  // Handle Ctrl+Shift+Z or Ctrl+Y for redo
+  if (event.ctrlKey && event.key.toLowerCase() === 'y') {
+    event.preventDefault()
+    store.redo()
+  }
 }
 
 // Track last synced ratios to prevent circular sync

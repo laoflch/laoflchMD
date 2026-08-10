@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, Menu, nativeTheme } from 'electron
 import { join, dirname, basename } from 'path'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, renameSync, unlinkSync, rmdirSync } from 'fs'
 import { registerS3Handlers } from './s3'
+import { VERSION_NOTES, type VersionNote } from './versionInfo'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -112,6 +113,16 @@ function createWindow(): void {
           click: () => mainWindow?.webContents.send('menu-toggle-theme')
         }
       ]
+    },
+    {
+      label: '帮助',
+      submenu: [
+        {
+          label: '关于 LaoflchMD',
+          accelerator: 'CmdOrCtrl+Shift+A',
+          click: () => mainWindow?.webContents.send('menu-about')
+        }
+      ]
     }
   ]
 
@@ -144,6 +155,24 @@ function createWindow(): void {
 // System theme detection
 ipcMain.handle('getSystemTheme', () => {
   return nativeTheme.shouldUseDarkColors
+})
+
+// App version & version notes
+ipcMain.handle('app:getInfo', () => {
+  let version = app.getVersion()
+  try {
+    const pkgPath = join(app.getAppPath(), 'package.json')
+    if (existsSync(pkgPath)) {
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+      if (pkg.version) version = pkg.version
+    }
+  } catch {
+    // fallback to app.getVersion()
+  }
+  return {
+    version,
+    notes: VERSION_NOTES
+  }
 })
 
 // Watch for OS theme changes
@@ -340,13 +369,17 @@ ipcMain.handle('filetree:readDir', async (_event, dirPath: string) => {
       const stats = statSync(fullPath)
       const isDir = stats.isDirectory()
       const ext = entry.toLowerCase()
+      const isMarkdownFile = !isDir && ['.md', '.markdown', '.mdown'].some(e => ext.endsWith(e))
 
-      result.push({
-        name: entry,
-        path: fullPath,
-        isDirectory: isDir,
-        isMarkdown: !isDir && ['.md', '.markdown', '.mdown'].some(e => ext.endsWith(e))
-      })
+      // Only show directories and markdown files
+      if (isDir || isMarkdownFile) {
+        result.push({
+          name: entry,
+          path: fullPath,
+          isDirectory: isDir,
+          isMarkdown: isMarkdownFile
+        })
+      }
     }
 
     // Sort: directories first, then by name

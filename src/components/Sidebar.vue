@@ -57,7 +57,7 @@ function switchTab(tab: 'files' | 's3') {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: var(--bg-secondary);
+  background: var(--bg-sidebar);
   border-right: 1px solid var(--border-color);
   font-size: 13px;
   user-select: none;
@@ -69,7 +69,7 @@ function switchTab(tab: 'files' | 's3') {
   align-items: center;
   border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
-  background: var(--bg-secondary);
+  background: var(--bg-sidebar);
 }
 
 .sidebar-tab {

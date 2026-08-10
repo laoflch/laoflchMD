@@ -65,6 +65,11 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('menu-toggle-sidebar', callback)
     return () => ipcRenderer.removeListener('menu-toggle-sidebar', callback)
   },
+  onAbout: (callback: () => void) => {
+    ipcRenderer.on('menu-about', callback)
+    return () => ipcRenderer.removeListener('menu-about', callback)
+  },
+  getAppInfo: () => ipcRenderer.invoke('app:getInfo'),
 
   // System theme detection
   getSystemTheme: () => ipcRenderer.invoke('getSystemTheme'),

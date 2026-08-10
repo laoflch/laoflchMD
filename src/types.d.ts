@@ -38,6 +38,8 @@ declare global {
       onExportPdf: (callback: () => void) => () => void
       onToggleTheme: (callback: () => void) => () => void
       onToggleSidebar: (callback: () => void) => () => void
+      onAbout: (callback: () => void) => () => void
+      getAppInfo: () => Promise<{ version: string; notes: VersionNote[] }>
 
       // System theme detection
       getSystemTheme: () => Promise<boolean>
@@ -79,4 +81,11 @@ export interface S3ObjectEntry {
   lastModified: string | null
   eTag?: string
   isMarkdown: boolean
+}
+
+export interface VersionNote {
+  version: string
+  date: string
+  title: string
+  changes: string[]
 }

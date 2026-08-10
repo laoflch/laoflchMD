@@ -130,6 +130,38 @@ function hello() {
   const viewMode = ref<ViewMode>('live')
   const isDarkTheme = ref(false)
 
+  // Undo / Redo history
+  const MAX_HISTORY = 200
+  const history = ref<string[]>([''])
+  let historyIndex = 0
+
+  function pushHistory(state: string) {
+    // 丢弃当前分支之后的 redo 历史
+    if (historyIndex < history.value.length - 1) {
+      history.value = history.value.slice(0, historyIndex + 1)
+    }
+    history.value.push(state)
+    if (history.value.length > MAX_HISTORY) {
+      history.value.shift()
+    } else {
+      historyIndex = history.value.length - 1
+    }
+  }
+
+  function undo() {
+    if (historyIndex > 0) {
+      historyIndex--
+      content.value = history.value[historyIndex]
+    }
+  }
+
+  function redo() {
+    if (historyIndex < history.value.length - 1) {
+      historyIndex++
+      content.value = history.value[historyIndex]
+    }
+  }
+
   const renderedHtml = computed(() => {
     return md.render(content.value)
   })
@@ -143,6 +175,8 @@ function hello() {
   })
 
   function setContent(newContent: string) {
+    if (newContent === content.value) return
+    pushHistory(content.value)
     content.value = newContent
   }
 
@@ -189,6 +223,11 @@ function hello() {
   }
 
   function newFile() {
+    if (content.value) {
+      pushHistory(content.value)
+    }
+    history.value = ['']
+    historyIndex = 0
     content.value = ''
     filePath.value = null
   }
@@ -196,6 +235,11 @@ function hello() {
   async function openFile() {
     const result = await window.api.openFile()
     if (result) {
+      if (content.value) {
+        pushHistory(content.value)
+      }
+      history.value = [result.content]
+      historyIndex = 0
       content.value = result.content
       filePath.value = result.filePath
     }
@@ -233,6 +277,8 @@ function hello() {
     newFile,
     openFile,
     saveFile,
-    saveFileAs
+    saveFileAs,
+    undo,
+    redo
   }
 })
