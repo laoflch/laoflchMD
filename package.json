@@ -15,11 +15,14 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1104.0",
+    "@types/turndown": "^5.0.6",
     "highlight.js": "^11.11.1",
     "markdown-it": "^14.2.0",
     "markdown-it-table-of-contents": "^1.2.0",
     "markdown-it-task-lists": "^2.1.1",
     "pinia": "^3.0.4",
+    "turndown": "^7.2.4",
+    "turndown-plugin-gfm": "^1.0.2",
     "vue": "^3.5.39"
   },
   "devDependencies": {

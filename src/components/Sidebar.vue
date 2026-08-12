@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import FileTree from './FileTree.vue'
 import S3Browser from './S3Browser.vue'
+import Outline from './Outline.vue'
 
-const props = defineProps<{ modelValue: 'files' | 's3' }>()
+const props = defineProps<{ modelValue: 'files' | 's3' | 'outline' }>()
 const emit = defineEmits<{
-  'update:modelValue': [value: 'files' | 's3']
+  'update:modelValue': [value: 'files' | 's3' | 'outline']
   close: []
 }>()
 
-function switchTab(tab: 'files' | 's3') {
+function switchTab(tab: 'files' | 's3' | 'outline') {
   emit('update:modelValue', tab)
 }
 </script>
@@ -24,7 +25,7 @@ function switchTab(tab: 'files' | 's3') {
         <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
           <path d="M1.5 3.5a1 1 0 0 1 1-1h3.172a1 1 0 0 1 .707.293L7.5 3.914H13.5a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1V3.5Z"/>
         </svg>
-        <span>本地文件</span>
+        <span>文件</span>
       </button>
       <button
         class="sidebar-tab"
@@ -37,6 +38,17 @@ function switchTab(tab: 'files' | 's3') {
         </svg>
         <span>S3</span>
       </button>
+      <button
+        class="sidebar-tab"
+        :class="{ active: modelValue === 'outline' }"
+        @click="switchTab('outline')"
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+          <path d="M2 3h4M2 8h6M2 13h5"/>
+          <path d="M10 3h4M9 8h5M8 13h6"/>
+        </svg>
+        <span>大纲</span>
+      </button>
       <button class="sidebar-close" title="关闭侧边栏" @click="emit('close')">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
           <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
@@ -46,6 +58,7 @@ function switchTab(tab: 'files' | 's3') {
     <div class="sidebar-body">
       <FileTree v-show="modelValue === 'files'" />
       <S3Browser v-show="modelValue === 's3'" />
+      <Outline v-show="modelValue === 'outline'" />
     </div>
   </div>
 </template>

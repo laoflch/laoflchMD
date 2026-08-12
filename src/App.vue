@@ -11,7 +11,7 @@ import 'highlight.js/styles/github.css'
 
 const store = useEditorStore()
 const showSidebar = ref(false)
-const sidebarTab = ref<'files' | 's3'>('files')
+const sidebarTab = ref<'files' | 's3' | 'outline'>('files')
 const showAbout = ref(false)
 
 // Listen for menu events from Electron main process

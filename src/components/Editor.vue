@@ -1,11 +1,30 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useEditorStore } from '../stores/editor'
 
 const store = useEditorStore()
 
 const splitRatio = ref(0.5)
 const isDragging = ref(false)
+const zoom = ref(1)
+
+function handleCtrlWheel(e: WheelEvent) {
+  if (!e.ctrlKey) return
+  e.preventDefault()
+  if (e.deltaY < 0) {
+    zoom.value = Math.min(2, zoom.value + 0.1)
+  } else {
+    zoom.value = Math.max(0.5, zoom.value - 0.1)
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('wheel', handleCtrlWheel, { passive: false })
+})
+
+onUnmounted(() => {
+  document.removeEventListener('wheel', handleCtrlWheel)
+})
 
 function onDividerMouseDown(e: MouseEvent) {
   const divider = e.currentTarget as HTMLElement
@@ -84,6 +103,25 @@ function onTextareaKeydown(event: KeyboardEvent) {
   }
 }
 
+// Preview editable mode: sync to Markdown on blur
+function onPreviewBlur(e: FocusEvent) {
+  const el = e.target as HTMLElement
+  if (!el || !el.innerHTML) return
+  store.setContentFromHtml(el.innerHTML)
+}
+
+// Preview editable mode: Ctrl+Enter to commit, Ctrl+Z/Y handled by store
+function onPreviewKeydown(e: KeyboardEvent) {
+  // Ctrl+Enter = 提交修改（同步到 Markdown 并重渲染）
+  if (e.ctrlKey && e.key === 'Enter') {
+    e.preventDefault()
+    const el = e.target as HTMLElement
+    if (el?.innerHTML !== undefined) {
+      store.setContentFromHtml(el.innerHTML)
+    }
+  }
+}
+
 // Track last synced ratios to prevent circular sync
 let lastEditorRatio = -1
 let lastPreviewRatio = -1
@@ -118,7 +156,7 @@ function syncPreviewToEditor() {
 </script>
 
 <template>
-  <div class="editor-container">
+  <div class="editor-container" :style="{ zoom: zoom }">
     <!-- Edit mode: textarea only -->
     <div v-if="store.viewMode === 'edit'" class="edit-pane">
       <textarea
@@ -131,9 +169,19 @@ function syncPreviewToEditor() {
       ></textarea>
     </div>
 
-    <!-- Preview mode: rendered only -->
+    <!-- Preview mode: rendered only (editable) -->
     <div v-else-if="store.viewMode === 'preview'" class="preview-pane">
-      <div class="preview-content markdown-body" v-html="store.renderedHtml"></div>
+      <div
+        class="preview-content markdown-body"
+        :contenteditable="true"
+        v-html="store.renderedHtml"
+        @blur="onPreviewBlur"
+        @keydown="onPreviewKeydown"
+        spellcheck="true"
+      ></div>
+      <div class="preview-edit-hint">
+        点击内容直接编辑，完成后按 Ctrl+Enter 或点击空白处同步到 Markdown
+      </div>
     </div>
 
     <!-- Live mode: split view (Typora-like) -->
@@ -199,12 +247,32 @@ function syncPreviewToEditor() {
   flex: 1;
   overflow-y: auto;
   min-height: 0;
+  position: relative;
 }
 
 .preview-content {
   max-width: var(--preview-max-width);
   margin: 0 auto;
   padding: 32px 40px;
+}
+
+.preview-content[contenteditable="true"]:focus {
+  outline: none;
+}
+
+.preview-edit-hint {
+  position: sticky;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 6px 16px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-color);
+  text-align: center;
+  pointer-events: none;
+  opacity: 0.8;
 }
 
 /* Live pane (split) */

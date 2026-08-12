@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import MarkdownIt from 'markdown-it'
+import TurndownService from 'turndown'
+import { gfm } from 'turndown-plugin-gfm'
 import hljs from 'highlight.js/lib/core'
 import bash from 'highlight.js/lib/languages/bash'
 import shell from 'highlight.js/lib/languages/shell'
@@ -76,6 +78,28 @@ const md = new MarkdownIt({
       }
     }
     return `<pre class="code-block"><code class="hljs">${md.utils.escapeHtml(str)}</code></pre>`
+  }
+})
+
+// Turndown: HTML -> Markdown (用于预览区编辑后回写)
+const turndown = new TurndownService({
+  headingStyle: 'atx',
+  codeBlockStyle: 'fenced',
+  bulletListMarker: '-',
+  emDelimiter: '*'
+})
+turndown.use(gfm())
+
+// 额外的代码块规则：从 highlight.js 生成的结构中恢复原始代码
+turndown.addRule('codeBlockHighlighted', {
+  filter: (node) =>
+    node.nodeName === 'PRE' &&
+    node.className.includes?.('code-block'),
+  replacement: function (_content, node) {
+    const codeEl = node.querySelector('code')
+    const lang = codeEl?.className.match(/language-(\w+)/)?.[1] || ''
+    const code = codeEl?.textContent || node.textContent || ''
+    return '\n\n```' + lang + '\n' + code.replace(/\n$/, '') + '\n```\n\n'
   }
 })
 
@@ -180,6 +204,11 @@ function hello() {
     content.value = newContent
   }
 
+  function setContentFromHtml(html: string) {
+    const mdText = turndown.turndown(html)
+    setContent(mdText)
+  }
+
   function setFilePath(path: string | null) {
     filePath.value = path
   }
@@ -269,6 +298,7 @@ function hello() {
     renderedHtml,
     fileName,
     setContent,
+    setContentFromHtml,
     setFilePath,
     setViewMode,
     toggleTheme,

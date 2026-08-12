@@ -54,7 +54,7 @@ async function handleSaveAs() {
 <template>
   <div class="toolbar">
     <div class="toolbar-group">
-      <button class="tool-btn sidebar-toggle" :class="{ active: showSidebar }" title="文件导航 (Ctrl+Shift+L)" @click="$emit('toggle-sidebar')">
+      <button class="tool-btn sidebar-toggle" :class="{ active: showSidebar }" title="导航 (Ctrl+Shift+L)" @click="$emit('toggle-sidebar')">
         <span class="tool-icon">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
             <path d="M2 2a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1H2zm0 1h12v10H2V3zm2 2v6h2V5H4zm3 0v6h6V5H7z"/>
