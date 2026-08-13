@@ -36,9 +36,9 @@ function close() {
 </script>
 
 <template>
-  <div class="title-bar">
+  <div class="title-bar" @contextmenu.prevent>
     <!-- Drag region (left side) -->
-    <div class="title-bar-drag">
+    <div class="title-bar-drag" @contextmenu.prevent>
       <div class="app-icon">✦</div>
       <span class="file-name">{{ store.fileName }}</span>
       <span v-if="store.filePath" class="file-path" :title="store.filePath">

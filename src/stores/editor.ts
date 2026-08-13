@@ -1,8 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { useS3Store } from './s3'
 import MarkdownIt from 'markdown-it'
 import TurndownService from 'turndown'
-import { gfm } from 'turndown-plugin-gfm'
 import hljs from 'highlight.js/lib/core'
 import bash from 'highlight.js/lib/languages/bash'
 import shell from 'highlight.js/lib/languages/shell'
@@ -88,7 +88,27 @@ const turndown = new TurndownService({
   bulletListMarker: '-',
   emDelimiter: '*'
 })
-turndown.use(gfm())
+
+// 给渲染出的标题加 id 锚点，便于大纲跳转
+function slugify(text: string) {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/[\s]+/g, '-')
+    .replace(/[^\w\u4e00-\u9fa5-]/g, '')
+}
+
+const originalHeadingOpen = md.renderer.rules.heading_open || function (tokens, idx, options, _env, self) {
+  return self.renderToken(tokens, idx, options)
+}
+md.renderer.rules.heading_open = function (tokens, idx, options, env, self) {
+  const next = tokens[idx + 1]
+  if (next && next.type === 'inline') {
+    const id = 'heading-' + slugify(next.content)
+    return `<h${tokens[idx].tag.slice(1)} id="${id}">`
+  }
+  return originalHeadingOpen(tokens, idx, options, env, self)
+}
 
 // 额外的代码块规则：从 highlight.js 生成的结构中恢复原始代码
 turndown.addRule('codeBlockHighlighted', {
@@ -151,8 +171,11 @@ function hello() {
 `)
 
   const filePath = ref<string | null>(null)
-  const viewMode = ref<ViewMode>('live')
+  // S3 源信息：当当前文件来自 S3 时记录，用于保存回 S3（而非写入本地相对路径）
+  const s3Source = ref<{ bucket: string; key: string } | null>(null)
+  const viewMode = ref<ViewMode>('preview')
   const isDarkTheme = ref(false)
+  const isModified = ref(false)
 
   // Undo / Redo history
   const MAX_HISTORY = 200
@@ -202,6 +225,7 @@ function hello() {
     if (newContent === content.value) return
     pushHistory(content.value)
     content.value = newContent
+    isModified.value = true
   }
 
   function setContentFromHtml(html: string) {
@@ -209,8 +233,27 @@ function hello() {
     setContent(mdText)
   }
 
+  // 预览区(contenteditable)每次内容变动时调用，仅标记为未保存，不做重渲染、不入历史
+  function markModified() {
+    isModified.value = true
+  }
+
+  // 加载文件内容（从文件树/S3 打开时调用）：设置内容、重置历史、标记为未修改
+  function loadFile(contentText: string, path: string | null, s3: { bucket: string; key: string } | null = null) {
+    history.value = [contentText]
+    historyIndex = 0
+    content.value = contentText
+    filePath.value = path
+    s3Source.value = s3
+    isModified.value = false
+  }
+
   function setFilePath(path: string | null) {
     filePath.value = path
+  }
+
+  function setS3Source(bucket: string | null, key: string | null) {
+    s3Source.value = bucket && key ? { bucket, key } : null
   }
 
   function setViewMode(mode: ViewMode) {
@@ -252,40 +295,62 @@ function hello() {
   }
 
   function newFile() {
-    if (content.value) {
-      pushHistory(content.value)
-    }
-    history.value = ['']
-    historyIndex = 0
-    content.value = ''
-    filePath.value = null
+    loadFile('', null, null)
   }
 
   async function openFile() {
     const result = await window.api.openFile()
     if (result) {
-      if (content.value) {
-        pushHistory(content.value)
-      }
-      history.value = [result.content]
-      historyIndex = 0
-      content.value = result.content
-      filePath.value = result.filePath
+      loadFile(result.content, result.filePath, null)
+    }
+  }
+
+  // 若当前处于可编辑预览态（contenteditable），先把 DOM 中的最新内容同步回 content.value，
+  // 否则 Ctrl+S 时（焦点仍在内容区内、未触发 blur）会保存到旧内容。
+  function syncEditablePreviewToContent() {
+    if (typeof document === 'undefined') return
+    const el = document.querySelector(
+      '.preview-content[contenteditable="true"]'
+    ) as HTMLElement | null
+    if (el && el.innerHTML !== undefined) {
+      setContentFromHtml(el.innerHTML)
     }
   }
 
   async function saveFile() {
+    syncEditablePreviewToContent()
+    console.log('[saveFile] triggered, s3Source=', s3Source.value, 'filePath=', filePath.value,
+      'contentLen=', content.value.length, 'contentHead=', JSON.stringify(content.value.slice(0, 80)))
+
+    // S3 文件直接保存回 S3（Ctrl+S 与工具栏「保存」一致）
+    if (s3Source.value) {
+      const s3 = useS3Store()
+      const ok = await s3.putObject(
+        s3Source.value.key,
+        content.value,
+        s3Source.value.bucket
+      )
+      if (ok) {
+        isModified.value = false
+        return s3Source.value.key
+      }
+      return null
+    }
+
     const result = await window.api.saveFile(content.value, filePath.value || undefined)
+    console.log('[saveFile] result=', result)
     if (result) {
       filePath.value = result
+      isModified.value = false
     }
     return result
   }
 
   async function saveFileAs() {
-    const result = await window.api.saveFileAs(content.value)
+    const result = await window.api.saveFileAs(content.value, fileName.value)
     if (result) {
       filePath.value = result
+      isModified.value = false
     }
     return result
   }
@@ -293,13 +358,18 @@ function hello() {
   return {
     content,
     filePath,
+    s3Source,
     viewMode,
     isDarkTheme,
+    isModified,
     renderedHtml,
     fileName,
     setContent,
     setContentFromHtml,
+    markModified,
+    loadFile,
     setFilePath,
+    setS3Source,
     setViewMode,
     toggleTheme,
     setTheme,

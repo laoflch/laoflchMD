@@ -10,7 +10,7 @@ const emit = defineEmits<{
   close: []
 }>()
 
-const version = ref('1.0.1')
+const version = ref('1.0.2')
 const notes = ref<VersionNote[]>([])
 
 onMounted(async () => {

@@ -77,8 +77,7 @@ async function selectNode(entry: FileEntry) {
   try {
     const content = await window.api.readFile(entry.path)
     if (content !== null) {
-      store.setContent(content)
-      store.setFilePath(entry.path)
+      store.loadFile(content, entry.path, null)
       selectedPath.value = entry.path
     }
   } catch (err) {
@@ -218,6 +217,17 @@ defineExpose({ refreshTree, openDir })
         <span class="root-path-text">{{ rootDir ? rootDir.split('/').pop() || rootDir : '未打开文件夹' }}</span>
       </div>
       <div class="sidebar-actions">
+        <button
+          class="icon-btn"
+          title="刷新"
+          @click="refreshTree"
+          :disabled="!rootDir || loading"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" :class="{ spinning: loading }">
+            <path d="M13.5 8a5.5 5.5 0 1 1-1.8-4"/>
+            <path d="M13 2v3.5h-3.5"/>
+          </svg>
+        </button>
         <button class="icon-btn" title="打开文件夹" @click="openDirectory">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
             <path d="M1.5 3.5a1 1 0 0 1 1-1h3.172a1 1 0 0 1 .707.293L7.5 3.914H13.5a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1V3.5Z"/>
@@ -301,8 +311,7 @@ defineExpose({ refreshTree, openDir })
 
 <style scoped>
 .file-tree-sidebar {
-  width: 260px;
-  min-width: 200px;
+  width: 100%;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -343,9 +352,19 @@ defineExpose({ refreshTree, openDir })
   padding: 0;
 }
 
-.icon-btn:hover {
+.icon-btn:hover:not(:disabled) {
   background: var(--bg-tertiary);
   color: var(--text-primary);
+}
+
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.icon-btn .spinning {
+  animation: spin 0.8s linear infinite;
+  transform-origin: center;
 }
 
 .root-path {

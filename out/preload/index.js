@@ -4,7 +4,7 @@ electron.contextBridge.exposeInMainWorld("api", {
   // File operations
   openFile: () => electron.ipcRenderer.invoke("dialog:openFile"),
   saveFile: (content, filePath) => electron.ipcRenderer.invoke("dialog:saveFile", content, filePath),
-  saveFileAs: (content) => electron.ipcRenderer.invoke("dialog:saveFileAs", content),
+  saveFileAs: (content, defaultName) => electron.ipcRenderer.invoke("dialog:saveFileAs", content, defaultName),
   getFilePath: () => electron.ipcRenderer.invoke("getFilePath"),
   setTitle: (title) => electron.ipcRenderer.invoke("setTitle", title),
   exportHtml: (html) => electron.ipcRenderer.invoke("export:html", html),

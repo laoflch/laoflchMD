@@ -13,7 +13,7 @@ interface Window {
   api: {
     openFile: () => Promise<{ content: string; filePath: string } | null>
     saveFile: (content: string, filePath?: string) => Promise<string | null>
-    saveFileAs: (content: string) => Promise<string | null>
+    saveFileAs: (content: string, defaultName?: string) => Promise<string | null>
     onFileOpened: (callback: (data: { content: string; filePath: string }) => void) => void
     getFilePath: () => Promise<string | null>
     setTitle: (title: string) => void

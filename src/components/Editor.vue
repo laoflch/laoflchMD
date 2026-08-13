@@ -103,6 +103,11 @@ function onTextareaKeydown(event: KeyboardEvent) {
   }
 }
 
+// Preview editable mode: 每次内容变动实时标记为未保存
+function onPreviewInput() {
+  store.markModified()
+}
+
 // Preview editable mode: sync to Markdown on blur
 function onPreviewBlur(e: FocusEvent) {
   const el = e.target as HTMLElement
@@ -171,16 +176,22 @@ function syncPreviewToEditor() {
 
     <!-- Preview mode: rendered only (editable) -->
     <div v-else-if="store.viewMode === 'preview'" class="preview-pane">
-      <div
-        class="preview-content markdown-body"
-        :contenteditable="true"
-        v-html="store.renderedHtml"
-        @blur="onPreviewBlur"
-        @keydown="onPreviewKeydown"
-        spellcheck="true"
-      ></div>
-      <div class="preview-edit-hint">
-        点击内容直接编辑，完成后按 Ctrl+Enter 或点击空白处同步到 Markdown
+      <div class="preview-scroll">
+        <div
+          class="preview-content markdown-body"
+          :contenteditable="true"
+          v-html="store.renderedHtml"
+          @input="onPreviewInput"
+          @blur="onPreviewBlur"
+          @keydown="onPreviewKeydown"
+          spellcheck="true"
+        ></div>
+      </div>
+      <div class="preview-status-bar">
+        <span class="status-left" :class="{ modified: store.isModified }">
+          {{ store.isModified ? '● 未保存' : '✓ 已保存' }}
+        </span>
+        <span class="status-right">{{ store.content.length }} 字符</span>
       </div>
     </div>
 
@@ -245,9 +256,17 @@ function syncPreviewToEditor() {
 /* Preview pane */
 .preview-pane {
   flex: 1;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   min-height: 0;
   position: relative;
+}
+
+.preview-scroll {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .preview-content {
@@ -260,19 +279,29 @@ function syncPreviewToEditor() {
   outline: none;
 }
 
-.preview-edit-hint {
-  position: sticky;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  padding: 6px 16px;
+.preview-status-bar {
+  flex: none;
+  padding: 6px 20px;
   font-size: 11px;
   color: var(--text-muted);
   background: var(--bg-secondary);
   border-top: 1px solid var(--border-color);
-  text-align: center;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   pointer-events: none;
-  opacity: 0.8;
+}
+
+.preview-status-bar .status-left {
+  color: var(--text-muted);
+}
+
+.preview-status-bar .status-left.modified {
+  color: #f0ad4e;
+}
+
+.preview-status-bar .status-right {
+  color: var(--text-muted);
 }
 
 /* Live pane (split) */

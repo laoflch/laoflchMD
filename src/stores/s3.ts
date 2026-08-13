@@ -157,12 +157,13 @@ export const useS3Store = defineStore('s3', () => {
   }
 
   // 上传对象（另存为到 S3）
-  async function putObject(key: string, content: string): Promise<boolean> {
-    if (!currentBucket.value) return false
+  async function putObject(key: string, content: string, bucket?: string): Promise<boolean> {
+    const target = bucket || currentBucket.value
+    if (!target) return false
     error.value = null
     try {
       // 直接用原始 Key（明文），不做编码转换
-      await window.api.s3PutObject(plainConfig(), currentBucket.value, key, content)
+      await window.api.s3PutObject(plainConfig(), target, key, content)
       return true
     } catch (e: unknown) {
       error.value = e instanceof Error ? e.message : '上传失败'

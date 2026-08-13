@@ -123,6 +123,18 @@ function registerS3Handlers() {
 }
 const VERSION_NOTES = [
   {
+    version: "1.0.2",
+    date: "2026-08-12",
+    title: "保存与预览体验优化",
+    changes: [
+      "修复 Ctrl+S 快捷键在预览模式下无法正确保存的问题",
+      "预览区内容变动实时标记「未保存」，保存后恢复「已保存」",
+      "状态栏固定在预览框底部，不再随内容滚动",
+      "S3 文件保存行为统一：Ctrl+S 与工具栏按钮均直接写回 S3",
+      "优化预览区与编辑区同步滚动，避免循环抖动"
+    ]
+  },
+  {
     version: "1.0.1",
     date: "2026-08-10",
     title: "优化与增强",
@@ -152,6 +164,13 @@ const VERSION_NOTES = [
   }
 ];
 let mainWindow = null;
+function ensureMdExtension(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const mdExts = [".md", ".markdown", ".mdown", ".mdx"];
+  if (mdExts.includes(ext)) return filePath;
+  if (ext && ext !== ".") return filePath;
+  return filePath + ".md";
+}
 function createWindow() {
   mainWindow = new electron.BrowserWindow({
     width: 1200,
@@ -192,12 +211,10 @@ function createWindow() {
         },
         {
           label: "保存",
-          accelerator: "CmdOrCtrl+S",
           click: () => mainWindow?.webContents.send("menu-save-file")
         },
         {
           label: "另存为",
-          accelerator: "CmdOrCtrl+Shift+S",
           click: () => mainWindow?.webContents.send("menu-save-as-file")
         },
         { type: "separator" },
@@ -327,8 +344,9 @@ electron.ipcMain.handle("dialog:saveFile", async (_event, content, filePath) => 
   if (!mainWindow) return null;
   try {
     if (filePath) {
-      fs.writeFileSync(filePath, content, "utf-8");
-      return filePath;
+      const finalPath2 = ensureMdExtension(filePath);
+      fs.writeFileSync(finalPath2, content, "utf-8");
+      return finalPath2;
     }
     const result = await electron.dialog.showSaveDialog(mainWindow, {
       filters: [
@@ -337,24 +355,30 @@ electron.ipcMain.handle("dialog:saveFile", async (_event, content, filePath) => 
       ]
     });
     if (result.canceled || !result.filePath) return null;
-    fs.writeFileSync(result.filePath, content, "utf-8");
-    return result.filePath;
+    const finalPath = ensureMdExtension(result.filePath);
+    fs.writeFileSync(finalPath, content, "utf-8");
+    return finalPath;
   } catch (err) {
     console.error("Save file error:", err);
     return null;
   }
 });
-electron.ipcMain.handle("dialog:saveFileAs", async (_event, content) => {
+electron.ipcMain.handle("dialog:saveFileAs", async (_event, content, defaultName) => {
   if (!mainWindow) return null;
-  const result = await electron.dialog.showSaveDialog(mainWindow, {
+  const options = {
     filters: [
       { name: "Markdown", extensions: ["md"] },
       { name: "所有文件", extensions: ["*"] }
     ]
-  });
+  };
+  if (defaultName) {
+    options.defaultPath = defaultName;
+  }
+  const result = await electron.dialog.showSaveDialog(mainWindow, options);
   if (result.canceled || !result.filePath) return null;
-  fs.writeFileSync(result.filePath, content, "utf-8");
-  return result.filePath;
+  const finalPath = ensureMdExtension(result.filePath);
+  fs.writeFileSync(finalPath, content, "utf-8");
+  return finalPath;
 });
 electron.ipcMain.handle("setTitle", (_event, title) => {
   if (mainWindow) {

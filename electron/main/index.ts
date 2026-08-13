@@ -1,10 +1,20 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu, nativeTheme } from 'electron'
-import { join, dirname, basename } from 'path'
+import { join, dirname, basename, extname } from 'path'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, renameSync, unlinkSync, rmdirSync } from 'fs'
 import { registerS3Handlers } from './s3'
 import { VERSION_NOTES, type VersionNote } from './versionInfo'
 
 let mainWindow: BrowserWindow | null = null
+
+// 若文件名无 .md 后缀则自动补上（仅在没有扩展名或扩展名不是常见 markdown 后缀时）
+function ensureMdExtension(filePath: string): string {
+  const ext = extname(filePath).toLowerCase()
+  const mdExts = ['.md', '.markdown', '.mdown', '.mdx']
+  if (mdExts.includes(ext)) return filePath
+  // 如果已有其他扩展名（用户明确指定），保留
+  if (ext && ext !== '.') return filePath
+  return filePath + '.md'
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -51,12 +61,10 @@ function createWindow(): void {
         },
         {
           label: '保存',
-          accelerator: 'CmdOrCtrl+S',
           click: () => mainWindow?.webContents.send('menu-save-file')
         },
         {
           label: '另存为',
-          accelerator: 'CmdOrCtrl+Shift+S',
           click: () => mainWindow?.webContents.send('menu-save-as-file')
         },
         { type: 'separator' },
@@ -203,8 +211,9 @@ ipcMain.handle('dialog:saveFile', async (_event, content: string, filePath?: str
 
   try {
     if (filePath) {
-      writeFileSync(filePath, content, 'utf-8')
-      return filePath
+      const finalPath = ensureMdExtension(filePath)
+      writeFileSync(finalPath, content, 'utf-8')
+      return finalPath
     }
 
     const result = await dialog.showSaveDialog(mainWindow, {
@@ -216,28 +225,35 @@ ipcMain.handle('dialog:saveFile', async (_event, content: string, filePath?: str
 
     if (result.canceled || !result.filePath) return null
 
-    writeFileSync(result.filePath, content, 'utf-8')
-    return result.filePath
+    const finalPath = ensureMdExtension(result.filePath)
+    writeFileSync(finalPath, content, 'utf-8')
+    return finalPath
   } catch (err) {
     console.error('Save file error:', err)
     return null
   }
 })
 
-ipcMain.handle('dialog:saveFileAs', async (_event, content: string) => {
+ipcMain.handle('dialog:saveFileAs', async (_event, content: string, defaultName?: string) => {
   if (!mainWindow) return null
 
-  const result = await dialog.showSaveDialog(mainWindow, {
+  const options: Electron.SaveDialogOptions = {
     filters: [
       { name: 'Markdown', extensions: ['md'] },
       { name: '所有文件', extensions: ['*'] }
     ]
-  })
+  }
+  if (defaultName) {
+    options.defaultPath = defaultName
+  }
+
+  const result = await dialog.showSaveDialog(mainWindow, options)
 
   if (result.canceled || !result.filePath) return null
 
-  writeFileSync(result.filePath, content, 'utf-8')
-  return result.filePath
+  const finalPath = ensureMdExtension(result.filePath)
+  writeFileSync(finalPath, content, 'utf-8')
+  return finalPath
 })
 
 ipcMain.handle('setTitle', (_event, title: string) => {

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref, onMounted } from 'vue'
 import FileTree from './FileTree.vue'
 import S3Browser from './S3Browser.vue'
 import Outline from './Outline.vue'
@@ -9,13 +10,58 @@ const emit = defineEmits<{
   close: []
 }>()
 
+const SIDEBAR_WIDTH_KEY = 'laoflchmd.sidebar.width'
+const MIN_WIDTH = 200
+const MAX_WIDTH = 600
+const sidebarWidth = ref(260)
+const isDragging = ref(false)
+
+onMounted(() => {
+  const saved = localStorage.getItem(SIDEBAR_WIDTH_KEY)
+  if (saved) {
+    const w = parseInt(saved, 10)
+    if (!isNaN(w) && w >= MIN_WIDTH && w <= MAX_WIDTH) {
+      sidebarWidth.value = w
+    }
+  }
+})
+
 function switchTab(tab: 'files' | 's3' | 'outline') {
   emit('update:modelValue', tab)
+}
+
+function onResizeMouseDown(e: MouseEvent) {
+  e.preventDefault()
+  isDragging.value = true
+  const startX = e.clientX
+  const startWidth = sidebarWidth.value
+
+  function onMove(ev: MouseEvent) {
+    const delta = ev.clientX - startX
+    let w = startWidth + delta
+    if (w < MIN_WIDTH) w = MIN_WIDTH
+    if (w > MAX_WIDTH) w = MAX_WIDTH
+    sidebarWidth.value = w
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }
+
+  function onUp() {
+    isDragging.value = false
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth.value))
+  }
+
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
 }
 </script>
 
 <template>
-  <div class="sidebar">
+  <div class="sidebar" :style="{ width: sidebarWidth + 'px' }">
     <div class="sidebar-tabs">
       <button
         class="sidebar-tab"
@@ -60,21 +106,25 @@ function switchTab(tab: 'files' | 's3' | 'outline') {
       <S3Browser v-show="modelValue === 's3'" />
       <Outline v-show="modelValue === 'outline'" />
     </div>
+    <div
+      class="sidebar-resizer"
+      :class="{ dragging: isDragging }"
+      @mousedown="onResizeMouseDown"
+    ></div>
   </div>
 </template>
 
 <style scoped>
 .sidebar {
-  width: 260px;
-  min-width: 200px;
   height: 100%;
   display: flex;
   flex-direction: column;
   background: var(--bg-sidebar);
-  border-right: 1px solid var(--border-color);
   font-size: 13px;
   user-select: none;
   overflow: hidden;
+  position: relative;
+  flex: none;
 }
 
 .sidebar-tabs {
@@ -133,5 +183,24 @@ function switchTab(tab: 'files' | 's3' | 'outline') {
   min-height: 0;
   display: flex;
   overflow: hidden;
+}
+
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: -2px;
+  width: 5px;
+  height: 100%;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 10;
+  border-right: 1px solid var(--border-color);
+  transition: background 0.15s;
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer.dragging {
+  background: var(--accent-color);
+  opacity: 0.5;
 }
 </style>

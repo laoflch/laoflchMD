@@ -39,7 +39,34 @@ const headings = computed<HeadingItem[]>(() => {
   return result
 })
 
-function scrollToLine(line: number) {
+function slugify(text: string) {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/[\s]+/g, '-')
+    .replace(/[^\w\u4e00-\u9fa5-]/g, '')
+}
+
+function scrollToLine(line: number, text: string) {
+  // 预览模式 / 分割模式：跳到预览区对应标题
+  const previewScroll = document.querySelector('.preview-scroll') as HTMLElement | null
+    || document.querySelector('.preview-pane') as HTMLElement | null
+  const headingId = 'heading-' + slugify(text)
+  if (previewScroll) {
+    const heading = previewScroll.querySelector(`#${headingId}`) as HTMLElement | null
+    if (heading) {
+      heading.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      // 编辑区也同步（如果存在）
+      syncEditor(line)
+      return
+    }
+  }
+
+  // 纯编辑模式：精确滚动 textarea
+  syncEditor(line)
+}
+
+function syncEditor(line: number) {
   const textarea = document.querySelector('.editor-textarea') as HTMLTextAreaElement | null
   if (!textarea) return
 
@@ -53,10 +80,11 @@ function scrollToLine(line: number) {
   textarea.selectionStart = textarea.selectionEnd = charIndex
   textarea.focus()
 
-  // 计算该行在 textarea 中的大致位置并滚动
-  const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 20
-  const scrollTop = line * lineHeight - textarea.clientHeight / 2
-  textarea.scrollTop = Math.max(0, scrollTop)
+  // 用临时元素精确测量行高（考虑 padding）
+  const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 22
+  const paddingTop = parseFloat(getComputedStyle(textarea).paddingTop) || 0
+  const targetTop = line * lineHeight + paddingTop
+  textarea.scrollTop = targetTop - textarea.clientHeight / 3
 }
 </script>
 
@@ -75,7 +103,7 @@ function scrollToLine(line: number) {
         :key="index"
         class="outline-item"
         :class="`level-${item.level}`"
-        @click="scrollToLine(item.line)"
+        @click="scrollToLine(item.line, item.text)"
         :title="item.text"
       >
         <span class="outline-dot"></span>

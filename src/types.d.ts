@@ -6,7 +6,7 @@ declare global {
       // File operations
       openFile: () => Promise<{ content: string; filePath: string } | null>
       saveFile: (content: string, filePath?: string) => Promise<string | null>
-      saveFileAs: (content: string) => Promise<string | null>
+      saveFileAs: (content: string, defaultName?: string) => Promise<string | null>
       getFilePath: () => Promise<string | null>
       setTitle: (title: string) => Promise<void>
       exportHtml: (html: string) => Promise<void>

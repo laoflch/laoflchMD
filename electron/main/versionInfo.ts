@@ -10,6 +10,18 @@ export interface VersionNote {
 
 export const VERSION_NOTES: VersionNote[] = [
   {
+    version: '1.0.2',
+    date: '2026-08-12',
+    title: '保存与预览体验优化',
+    changes: [
+      '修复 Ctrl+S 快捷键在预览模式下无法正确保存的问题',
+      '预览区内容变动实时标记「未保存」，保存后恢复「已保存」',
+      '状态栏固定在预览框底部，不再随内容滚动',
+      'S3 文件保存行为统一：Ctrl+S 与工具栏按钮均直接写回 S3',
+      '优化预览区与编辑区同步滚动，避免循环抖动'
+    ]
+  },
+  {
     version: '1.0.1',
     date: '2026-08-10',
     title: '优化与增强',

@@ -55,8 +55,7 @@ async function openObject(entry: S3ObjectEntry) {
   if (!entry.isMarkdown) return
   const content = await s3.getObject(entry)
   if (content !== null) {
-    editor.setContent(content)
-    editor.setFilePath(entry.key)
+    editor.loadFile(content, entry.key, { bucket: s3.currentBucket!, key: entry.key })
   }
 }
 

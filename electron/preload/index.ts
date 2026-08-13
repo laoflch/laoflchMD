@@ -5,7 +5,8 @@ contextBridge.exposeInMainWorld('api', {
   openFile: () => ipcRenderer.invoke('dialog:openFile'),
   saveFile: (content: string, filePath?: string) =>
     ipcRenderer.invoke('dialog:saveFile', content, filePath),
-  saveFileAs: (content: string) => ipcRenderer.invoke('dialog:saveFileAs', content),
+  saveFileAs: (content: string, defaultName?: string) =>
+    ipcRenderer.invoke('dialog:saveFileAs', content, defaultName),
   getFilePath: () => ipcRenderer.invoke('getFilePath'),
   setTitle: (title: string) => ipcRenderer.invoke('setTitle', title),
   exportHtml: (html: string) => ipcRenderer.invoke('export:html', html),

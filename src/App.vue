@@ -76,9 +76,23 @@ onMounted(async () => {
   }
 })
 
-// Global keyboard shortcut for sidebar toggle
+// Global keyboard shortcuts
 function onGlobalKeydown(e: KeyboardEvent) {
-  if (e.ctrlKey && e.shiftKey && e.key === 'L') {
+  // Ctrl+S — 保存（与工具栏「保存」按钮走同一 store.saveFile 路径，确保一致）
+  if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 's') {
+    e.preventDefault()
+    console.log('[keydown] Ctrl+S captured')
+    store.saveFile()
+    return
+  }
+  // Ctrl+Shift+S — 另存为
+  if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 's') {
+    e.preventDefault()
+    store.saveFileAs()
+    return
+  }
+  // Ctrl+Shift+L — 切换侧边栏
+  if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'l') {
     e.preventDefault()
     toggleSidebar()
   }
@@ -254,19 +268,19 @@ html, body {
 /* Sidebar transition */
 .sidebar-enter-active,
 .sidebar-leave-active {
-  transition: width 0.2s ease, opacity 0.2s ease;
-  overflow: hidden;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+  transform-origin: left center;
 }
 
 .sidebar-enter-from,
 .sidebar-leave-to {
-  width: 0 !important;
+  transform: scaleX(0);
   opacity: 0;
 }
 
 .sidebar-enter-to,
 .sidebar-leave-from {
-  width: 260px;
+  transform: scaleX(1);
   opacity: 1;
 }
 
