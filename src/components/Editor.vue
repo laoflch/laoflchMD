@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import { useDragDivider } from '../composables/useDragDivider'
 import { useEditorStore } from '../stores/editor'
 
 const store = useEditorStore()
 
 const splitRatio = ref(0.5)
-const isDragging = ref(false)
 const zoom = ref(1)
+let containerWidth = 1
+let startRatio = 0
 
 function handleCtrlWheel(e: WheelEvent) {
   if (!e.ctrlKey) return
@@ -26,34 +28,19 @@ onUnmounted(() => {
   document.removeEventListener('wheel', handleCtrlWheel)
 })
 
-function onDividerMouseDown(e: MouseEvent) {
-  const divider = e.currentTarget as HTMLElement
-  const container = divider.closest('.live-pane') as HTMLElement
-  if (!container) return
-
-  isDragging.value = true
-  const startX = e.clientX
-  const startRatio = splitRatio.value
-  const containerWidth = container.offsetWidth
-
-  function onMouseMove(e: MouseEvent) {
-    const dx = e.clientX - startX
-    splitRatio.value = Math.max(0.15, Math.min(0.85, startRatio + dx / containerWidth))
+const { isDragging, startDrag: onDividerMouseDown } = useDragDivider({
+  preventDefault: false,
+  onDragStart: (e: MouseEvent) => {
+    const divider = e.currentTarget as HTMLElement
+    const container = divider.closest('.live-pane') as HTMLElement
+    if (!container) return
+    containerWidth = container.offsetWidth
+    startRatio = splitRatio.value
+  },
+  onDragMove: (deltaX) => {
+    splitRatio.value = Math.max(0.15, Math.min(0.85, startRatio + deltaX / containerWidth))
   }
-
-  function onMouseUp() {
-    isDragging.value = false
-    document.removeEventListener('mousemove', onMouseMove)
-    document.removeEventListener('mouseup', onMouseUp)
-    document.body.style.cursor = ''
-    document.body.style.userSelect = ''
-  }
-
-  document.addEventListener('mousemove', onMouseMove)
-  document.addEventListener('mouseup', onMouseUp)
-  document.body.style.cursor = 'col-resize'
-  document.body.style.userSelect = 'none'
-}
+})
 
 function onTextareaInput(event: Event) {
   const target = event.target as HTMLTextAreaElement

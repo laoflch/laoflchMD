@@ -2,14 +2,21 @@
 const electron = require("electron");
 const path = require("path");
 const fs = require("fs");
-const clientS3 = require("@aws-sdk/client-s3");
+let s3Module = null;
+function getS3Module() {
+  if (!s3Module) {
+    s3Module = require("@aws-sdk/client-s3");
+  }
+  return s3Module;
+}
 function createClient(config) {
+  const { S3Client } = getS3Module();
   let endpoint = config.endpoint || void 0;
   if (endpoint && !endpoint.startsWith("http")) {
     endpoint = "http://" + endpoint;
   }
   console.log("S3 client config:", { endpoint, region: config.region, accessKeyId: config.accessKeyId });
-  return new clientS3.S3Client({
+  return new S3Client({
     endpoint,
     region: config.region || "us-east-1",
     // 使用路径式寻址，兼容 MinIO 等自建 S3 兼容存储
@@ -33,8 +40,9 @@ function safeDecodeKey(key) {
 function registerS3Handlers() {
   electron.ipcMain.handle("s3:listBuckets", async (_event, config) => {
     try {
+      const { ListBucketsCommand } = getS3Module();
       const client = createClient(config);
-      const res = await client.send(new clientS3.ListBucketsCommand({}));
+      const res = await client.send(new ListBucketsCommand({}));
       return (res.Buckets || []).filter((b) => b.Name).map((b) => ({
         name: b.Name,
         creationDate: b.CreationDate ? b.CreationDate.toISOString() : null
@@ -49,9 +57,10 @@ function registerS3Handlers() {
     "s3:listObjects",
     async (_event, config, bucket, prefix) => {
       try {
+        const { ListObjectsV2Command } = getS3Module();
         const client = createClient(config);
         const res = await client.send(
-          new clientS3.ListObjectsV2Command({
+          new ListObjectsV2Command({
             Bucket: bucket,
             Prefix: prefix,
             Delimiter: "/"
@@ -81,8 +90,9 @@ function registerS3Handlers() {
     "s3:getObject",
     async (_event, config, bucket, key) => {
       try {
+        const { GetObjectCommand } = getS3Module();
         const client = createClient(config);
-        const res = await client.send(new clientS3.GetObjectCommand({ Bucket: bucket, Key: key }));
+        const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
         const content = await res.Body?.transformToString("utf-8");
         return content ?? null;
       } catch (e) {
@@ -96,8 +106,9 @@ function registerS3Handlers() {
     "s3:putObject",
     async (_event, config, bucket, key, content) => {
       try {
+        const { PutObjectCommand } = getS3Module();
         const client = createClient(config);
-        await client.send(new clientS3.PutObjectCommand({ Bucket: bucket, Key: key, Body: content }));
+        await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: content }));
         return { key };
       } catch (e) {
         console.error("s3:putObject error:", e);
@@ -110,8 +121,9 @@ function registerS3Handlers() {
     "s3:deleteObject",
     async (_event, config, bucket, key) => {
       try {
+        const { DeleteObjectCommand } = getS3Module();
         const client = createClient(config);
-        await client.send(new clientS3.DeleteObjectCommand({ Bucket: bucket, Key: key }));
+        await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
         return true;
       } catch (e) {
         console.error("s3:deleteObject error:", e);

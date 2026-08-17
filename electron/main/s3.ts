@@ -1,11 +1,3 @@
-import {
-  S3Client,
-  ListBucketsCommand,
-  ListObjectsV2Command,
-  GetObjectCommand,
-  PutObjectCommand,
-  DeleteObjectCommand
-} from '@aws-sdk/client-s3'
 import { ipcMain } from 'electron'
 
 export interface S3Config {
@@ -16,7 +8,18 @@ export interface S3Config {
   secretAccessKey: string
 }
 
-function createClient(config: S3Config): S3Client {
+// 懒加载 AWS SDK —— 首次调用 S3 功能时才加载，加快主进程启动
+let s3Module: any = null
+
+function getS3Module(): any {
+  if (!s3Module) {
+    s3Module = require('@aws-sdk/client-s3')
+  }
+  return s3Module
+}
+
+function createClient(config: S3Config) {
+  const { S3Client } = getS3Module()
   let endpoint = config.endpoint || undefined
   if (endpoint && !endpoint.startsWith('http')) {
     endpoint = 'http://' + endpoint
@@ -52,11 +55,12 @@ export function registerS3Handlers(): void {
   // 列出所有桶
   ipcMain.handle('s3:listBuckets', async (_event, config: S3Config) => {
     try {
+      const { ListBucketsCommand } = getS3Module()
       const client = createClient(config)
       const res = await client.send(new ListBucketsCommand({}))
       return (res.Buckets || [])
-        .filter((b) => b.Name)
-        .map((b) => ({
+        .filter((b: any) => b.Name)
+        .map((b: any) => ({
           name: b.Name as string,
           creationDate: b.CreationDate ? b.CreationDate.toISOString() : null
         }))
@@ -72,6 +76,7 @@ export function registerS3Handlers(): void {
     's3:listObjects',
     async (_event, config: S3Config, bucket: string, prefix: string) => {
       try {
+        const { ListObjectsV2Command } = getS3Module()
         const client = createClient(config)
         const res = await client.send(
           new ListObjectsV2Command({
@@ -82,14 +87,14 @@ export function registerS3Handlers(): void {
         )
 
         const folders = (res.CommonPrefixes || [])
-          .map((cp) => safeDecodeKey(cp.Prefix || ''))
+          .map((cp: any) => safeDecodeKey(cp.Prefix || ''))
           .filter(Boolean)
 
         const files = (res.Contents || [])
-          .filter((o) => o.Key && o.Key !== prefix)
+          .filter((o: any) => o.Key && o.Key !== prefix)
           // 只显示 Markdown 文件（.md 结尾），过滤掉其他类型的对象
-          .filter((o) => isMarkdownKey(o.Key as string))
-          .map((o) => {
+          .filter((o: any) => isMarkdownKey(o.Key as string))
+          .map((o: any) => {
             const key = safeDecodeKey(o.Key as string)
             return {
               key,
@@ -115,6 +120,7 @@ export function registerS3Handlers(): void {
     's3:getObject',
     async (_event, config: S3Config, bucket: string, key: string) => {
       try {
+        const { GetObjectCommand } = getS3Module()
         const client = createClient(config)
         const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }))
         const content = await res.Body?.transformToString('utf-8')
@@ -132,6 +138,7 @@ export function registerS3Handlers(): void {
     's3:putObject',
     async (_event, config: S3Config, bucket: string, key: string, content: string) => {
       try {
+        const { PutObjectCommand } = getS3Module()
         const client = createClient(config)
         await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: content }))
         return { key }
@@ -148,6 +155,7 @@ export function registerS3Handlers(): void {
     's3:deleteObject',
     async (_event, config: S3Config, bucket: string, key: string) => {
       try {
+        const { DeleteObjectCommand } = getS3Module()
         const client = createClient(config)
         await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }))
         return true

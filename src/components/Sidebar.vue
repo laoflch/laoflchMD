@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useDragDivider } from '../composables/useDragDivider'
 import FileTree from './FileTree.vue'
 import S3Browser from './S3Browser.vue'
 import Outline from './Outline.vue'
@@ -14,7 +15,6 @@ const SIDEBAR_WIDTH_KEY = 'laoflchmd.sidebar.width'
 const MIN_WIDTH = 200
 const MAX_WIDTH = 600
 const sidebarWidth = ref(260)
-const isDragging = ref(false)
 
 onMounted(() => {
   const saved = localStorage.getItem(SIDEBAR_WIDTH_KEY)
@@ -30,34 +30,22 @@ function switchTab(tab: 'files' | 's3' | 'outline') {
   emit('update:modelValue', tab)
 }
 
-function onResizeMouseDown(e: MouseEvent) {
-  e.preventDefault()
-  isDragging.value = true
-  const startX = e.clientX
-  const startWidth = sidebarWidth.value
+let startWidth = 0
 
-  function onMove(ev: MouseEvent) {
-    const delta = ev.clientX - startX
-    let w = startWidth + delta
+const { isDragging, startDrag } = useDragDivider({
+  onDragStart: () => {
+    startWidth = sidebarWidth.value
+  },
+  onDragMove: (deltaX) => {
+    let w = startWidth + deltaX
     if (w < MIN_WIDTH) w = MIN_WIDTH
     if (w > MAX_WIDTH) w = MAX_WIDTH
     sidebarWidth.value = w
-    document.body.style.cursor = 'col-resize'
-    document.body.style.userSelect = 'none'
-  }
-
-  function onUp() {
-    isDragging.value = false
-    document.removeEventListener('mousemove', onMove)
-    document.removeEventListener('mouseup', onUp)
-    document.body.style.cursor = ''
-    document.body.style.userSelect = ''
+  },
+  onDragEnd: () => {
     localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth.value))
   }
-
-  document.addEventListener('mousemove', onMove)
-  document.addEventListener('mouseup', onUp)
-}
+})
 </script>
 
 <template>
@@ -109,7 +97,7 @@ function onResizeMouseDown(e: MouseEvent) {
     <div
       class="sidebar-resizer"
       :class="{ dragging: isDragging }"
-      @mousedown="onResizeMouseDown"
+      @mousedown="startDrag"
     ></div>
   </div>
 </template>
