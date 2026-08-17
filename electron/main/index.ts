@@ -5,6 +5,122 @@ import { registerS3Handlers } from './s3'
 import { VERSION_NOTES, type VersionNote } from './versionInfo'
 
 let mainWindow: BrowserWindow | null = null
+let splashWindow: BrowserWindow | null = null
+
+function getAppVersion(): string {
+  try {
+    const pkgPath = join(app.getAppPath(), 'package.json')
+    if (existsSync(pkgPath)) {
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+      if (pkg.version) return pkg.version
+    }
+  } catch {
+    // ignore
+  }
+  return app.getVersion()
+}
+
+function getSplashHtml(version: string): string {
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>LaoflchMD</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    html,body{width:100%;height:100%;overflow:hidden;user-select:none;-webkit-user-select:none}
+    body{
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+      background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
+      display:flex;flex-direction:column;align-items:center;justify-content:center;
+      color:#fff;position:relative;-webkit-app-region:drag;
+    }
+    body::before,body::after{content:'';position:absolute;border-radius:50%;opacity:.15;background:#fff}
+    body::before{width:300px;height:300px;top:-100px;right:-80px}
+    body::after{width:200px;height:200px;bottom:-60px;left:-40px}
+    .logo{
+      width:80px;height:80px;border-radius:20px;
+      background:rgba(255,255,255,.15);backdrop-filter:blur(10px);
+      display:flex;align-items:center;justify-content:center;font-size:40px;
+      margin-bottom:20px;z-index:1;box-shadow:0 8px 32px rgba(0,0,0,.15);
+      animation:float 3s ease-in-out infinite;
+    }
+    @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+    .name{font-size:28px;font-weight:600;margin-bottom:6px;z-index:1;letter-spacing:.5px}
+    .desc{font-size:13px;opacity:.75;margin-bottom:40px;z-index:1}
+    .wrap{width:220px;z-index:1}
+    .bar{width:100%;height:4px;background:rgba(255,255,255,.2);border-radius:2px;overflow:hidden;margin-bottom:12px}
+    .fill{height:100%;background:#fff;border-radius:2px;width:0%;transition:width .3s ease;box-shadow:0 0 10px rgba(255,255,255,.4)}
+    .text{font-size:12px;opacity:.7;text-align:center;min-height:18px}
+    .ver{position:absolute;bottom:20px;left:0;right:0;text-align:center;font-size:11px;opacity:.5;z-index:1}
+  </style>
+</head>
+<body>
+  <div class="logo">📝</div>
+  <div class="name">LaoflchMD</div>
+  <div class="desc">跨平台 Markdown 编辑器</div>
+  <div class="wrap">
+    <div class="bar"><div class="fill" id="f"></div></div>
+    <div class="text" id="t">正在初始化...</div>
+  </div>
+  <div class="ver">v${version}</div>
+  <script>
+    const{ipcRenderer}=require('electron')
+    const f=document.getElementById('f'),t=document.getElementById('t')
+    ipcRenderer.on('splash:progress',(_e,p,msg)=>{
+      f.style.width=Math.max(0,Math.min(100,p))+'%'
+      if(msg)t.textContent=msg
+    })
+  </script>
+</body>
+</html>`
+}
+
+function createSplashWindow(): void {
+  const version = getAppVersion()
+
+  splashWindow = new BrowserWindow({
+    width: 420,
+    height: 320,
+    frame: false,
+    resizable: false,
+    movable: true,
+    alwaysOnTop: true,
+    center: true,
+    show: false,
+    backgroundColor: '#667eea',
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false
+    }
+  })
+
+  const dataUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(getSplashHtml(version))
+  splashWindow.loadURL(dataUrl)
+
+  splashWindow.once('ready-to-show', () => {
+    splashWindow?.show()
+  })
+}
+
+function updateSplashProgress(progress: number, message?: string): void {
+  if (splashWindow && !splashWindow.isDestroyed()) {
+    splashWindow.webContents.send('splash:progress', progress, message)
+  }
+}
+
+function closeSplash(): void {
+  if (splashWindow && !splashWindow.isDestroyed()) {
+    // 先推进到 100% 再关闭，视觉更自然
+    updateSplashProgress(100, '加载完成')
+    setTimeout(() => {
+      if (splashWindow && !splashWindow.isDestroyed()) {
+        splashWindow.close()
+        splashWindow = null
+      }
+    }, 250)
+  }
+}
 
 // 若文件名无 .md 后缀则自动补上（仅在没有扩展名或扩展名不是常见 markdown 后缀时）
 function ensureMdExtension(filePath: string): string {
@@ -33,7 +149,12 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
-    mainWindow?.show()
+    // 主窗口准备好后，关闭闪屏再显示主窗口
+    closeSplash()
+    setTimeout(() => {
+      mainWindow?.show()
+      updateSplashProgress(100)
+    }, 300)
   })
 
   mainWindow.on('maximize', () => {
@@ -530,8 +651,17 @@ function getExportStyles(): string {
 }
 
 app.whenReady().then(() => {
-  createWindow()
-  registerS3Handlers()
+  // 先显示闪屏窗口（很快），后台加载主窗口
+  createSplashWindow()
+  updateSplashProgress(10, '正在启动应用...')
+
+  // 稍作延迟让闪屏先渲染出来
+  setTimeout(() => {
+    updateSplashProgress(25, '加载编辑器组件...')
+    createWindow()
+    registerS3Handlers()
+    updateSplashProgress(60, '初始化服务...')
+  }, 50)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
