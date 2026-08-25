@@ -2,63 +2,77 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useS3Store } from './s3'
 import MarkdownIt from 'markdown-it'
+import TurndownService from 'turndown'
 import hljs from 'highlight.js/lib/core'
 import javascript from 'highlight.js/lib/languages/javascript'
 import json from 'highlight.js/lib/languages/json'
 import markdown from 'highlight.js/lib/languages/markdown'
 
-// ——— 懒加载语言模块（首屏不注册，首次渲染代码块后异步注册剩余语言） ———
-const lazyLanguages: Array<[string, () => any]> = [
-  ['bash', () => require('highlight.js/lib/languages/bash')],
-  ['shell', () => require('highlight.js/lib/languages/shell')],
-  ['typescript', () => require('highlight.js/lib/languages/typescript')],
-  ['css', () => require('highlight.js/lib/languages/css')],
-  ['scss', () => require('highlight.js/lib/languages/scss')],
-  ['xml', () => require('highlight.js/lib/languages/xml')],
-  ['python', () => require('highlight.js/lib/languages/python')],
-  ['java', () => require('highlight.js/lib/languages/java')],
-  ['cpp', () => require('highlight.js/lib/languages/cpp')],
-  ['csharp', () => require('highlight.js/lib/languages/csharp')],
-  ['go', () => require('highlight.js/lib/languages/go')],
-  ['rust', () => require('highlight.js/lib/languages/rust')],
-  ['php', () => require('highlight.js/lib/languages/php')],
-  ['sql', () => require('highlight.js/lib/languages/sql')],
-  ['yaml', () => require('highlight.js/lib/languages/yaml')],
-  ['dockerfile', () => require('highlight.js/lib/languages/dockerfile')],
-  ['diff', () => require('highlight.js/lib/languages/diff')],
-  ['kotlin', () => require('highlight.js/lib/languages/kotlin')],
-  ['swift', () => require('highlight.js/lib/languages/swift')],
-  ['ruby', () => require('highlight.js/lib/languages/ruby')],
-  ['lua', () => require('highlight.js/lib/languages/lua')],
-  ['perl', () => require('highlight.js/lib/languages/perl')],
-  ['r', () => require('highlight.js/lib/languages/r')],
-  ['plaintext', () => require('highlight.js/lib/languages/plaintext')],
-  ['nginx', () => require('highlight.js/lib/languages/nginx')]
+// ——— 懒加载语言模块（首屏只同步注册常用语言，其余异步预注册） ———
+// 使用动态 import()：Vite 会将其拆分为独立 chunk，浏览器环境可用
+const lazyLanguages: Array<[string, () => Promise<any>]> = [
+  ['bash', () => import('highlight.js/lib/languages/bash')],
+  ['shell', () => import('highlight.js/lib/languages/shell')],
+  ['typescript', () => import('highlight.js/lib/languages/typescript')],
+  ['css', () => import('highlight.js/lib/languages/css')],
+  ['scss', () => import('highlight.js/lib/languages/scss')],
+  ['xml', () => import('highlight.js/lib/languages/xml')],
+  ['python', () => import('highlight.js/lib/languages/python')],
+  ['java', () => import('highlight.js/lib/languages/java')],
+  ['cpp', () => import('highlight.js/lib/languages/cpp')],
+  ['csharp', () => import('highlight.js/lib/languages/csharp')],
+  ['go', () => import('highlight.js/lib/languages/go')],
+  ['rust', () => import('highlight.js/lib/languages/rust')],
+  ['php', () => import('highlight.js/lib/languages/php')],
+  ['sql', () => import('highlight.js/lib/languages/sql')],
+  ['yaml', () => import('highlight.js/lib/languages/yaml')],
+  ['dockerfile', () => import('highlight.js/lib/languages/dockerfile')],
+  ['diff', () => import('highlight.js/lib/languages/diff')],
+  ['kotlin', () => import('highlight.js/lib/languages/kotlin')],
+  ['swift', () => import('highlight.js/lib/languages/swift')],
+  ['ruby', () => import('highlight.js/lib/languages/ruby')],
+  ['lua', () => import('highlight.js/lib/languages/lua')],
+  ['perl', () => import('highlight.js/lib/languages/perl')],
+  ['r', () => import('highlight.js/lib/languages/r')],
+  ['plaintext', () => import('highlight.js/lib/languages/plaintext')],
+  ['nginx', () => import('highlight.js/lib/languages/nginx')]
 ]
 
 let lazyLanguagesRegistered = false
+let lazyLanguagesPromise: Promise<void> | null = null
+
+// 响应式标记：全部语言注册完成。renderedHtml 依赖它，注册完成后自动重渲染，
+// 解决「首次渲染时语言尚未加载完导致代码块无高亮」的时序问题
+const languagesReady = ref(false)
 
 // 首屏只注册最常用的 3 种语言（足够欢迎页展示）
 hljs.registerLanguage('javascript', javascript)
 hljs.registerLanguage('json', json)
 hljs.registerLanguage('markdown', markdown)
 
-// 空闲时注册其余语言（在首次渲染后的下一个空闲周期执行）
-function ensureAllLanguages() {
-  if (lazyLanguagesRegistered) return
-  lazyLanguagesRegistered = true
-  // 用 setTimeout(0) 让出主线程，不阻塞首屏
-  setTimeout(() => {
-    for (const [name, loader] of lazyLanguages) {
-      try {
-        const mod = loader()
-        hljs.registerLanguage(name, mod.default || mod)
-      } catch (e) {
-        // 静默忽略加载失败的语言
-      }
-    }
-  }, 0)
+// 异步预注册其余语言（模块加载后立即触发，不阻塞首屏渲染）
+function ensureAllLanguages(): Promise<void> {
+  if (lazyLanguagesPromise) return lazyLanguagesPromise
+  if (lazyLanguagesRegistered) return Promise.resolve()
+  lazyLanguagesPromise = (async () => {
+    await Promise.all(
+      lazyLanguages.map(async ([name, loader]) => {
+        try {
+          const mod = await loader()
+          hljs.registerLanguage(name, mod.default || mod)
+        } catch {
+          // 静默忽略加载失败的语言
+        }
+      })
+    )
+    lazyLanguagesRegistered = true
+    languagesReady.value = true
+  })()
+  return lazyLanguagesPromise
 }
+
+// 立即启动语言预注册（不阻塞模块初始化）
+void ensureAllLanguages()
 
 // 给渲染出的标题加 id 锚点，便于大纲跳转
 function slugify(text: string): string {
@@ -75,10 +89,6 @@ const md = new MarkdownIt({
   typographer: true,
   breaks: true,
   highlight: (str: string, lang: string): string => {
-    // 首次进入代码高亮时，触发剩余语言的延迟注册
-    if (!lazyLanguagesRegistered) {
-      ensureAllLanguages()
-    }
     if (lang && hljs.getLanguage(lang)) {
       try {
         return `<pre class="code-block"><code class="hljs language-${lang}">${
@@ -105,19 +115,13 @@ md.renderer.rules.heading_open = function (tokens, idx, options, env, self) {
 }
 
 // Turndown: HTML -> Markdown (用于预览区编辑后回写)
-// 懒初始化 —— 只有在预览区编辑并提交时才创建实例
-type TurndownServiceInstance = {
-  turndown: (html: string) => string
-  addRule: (name: string, rule: any) => void
-}
+// 懒初始化 —— 模块已打包，但实例化推迟到首次预览区编辑提交时
+let turndown: TurndownService | null = null
 
-let turndown: TurndownServiceInstance | null = null
-
-function getTurndown(): TurndownServiceInstance {
+function getTurndown(): TurndownService {
   if (turndown) return turndown
 
-  const TurndownService = require('turndown') as any
-  const instance: TurndownServiceInstance = new TurndownService({
+  turndown = new TurndownService({
     headingStyle: 'atx',
     codeBlockStyle: 'fenced',
     bulletListMarker: '-',
@@ -125,7 +129,7 @@ function getTurndown(): TurndownServiceInstance {
   })
 
   // 额外的代码块规则：从 highlight.js 生成的结构中恢复原始代码
-  instance.addRule('codeBlockHighlighted', {
+  turndown.addRule('codeBlockHighlighted', {
     filter: (node: any) =>
       node.nodeName === 'PRE' &&
       node.className.includes?.('code-block'),
@@ -137,7 +141,6 @@ function getTurndown(): TurndownServiceInstance {
     }
   })
 
-  turndown = instance
   return turndown
 }
 
@@ -228,6 +231,9 @@ function hello() {
   }
 
   const renderedHtml = computed(() => {
+    // 依赖 languagesReady：语言异步注册完成后触发重新渲染，
+    // 确保最初未注册的语言（如 rust）也能正确高亮
+    languagesReady.value
     return md.render(content.value)
   })
 

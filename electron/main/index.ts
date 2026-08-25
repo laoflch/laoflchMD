@@ -35,28 +35,61 @@ function getSplashHtml(version: string): string {
       display:flex;flex-direction:column;align-items:center;justify-content:center;
       color:#fff;position:relative;-webkit-app-region:drag;
     }
-    body::before,body::after{content:'';position:absolute;border-radius:50%;opacity:.15;background:#fff}
-    body::before{width:300px;height:300px;top:-100px;right:-80px}
-    body::after{width:200px;height:200px;bottom:-60px;left:-40px}
-    .logo{
-      width:80px;height:80px;border-radius:20px;
-      background:rgba(255,255,255,.15);backdrop-filter:blur(10px);
-      display:flex;align-items:center;justify-content:center;font-size:40px;
-      margin-bottom:20px;z-index:1;box-shadow:0 8px 32px rgba(0,0,0,.15);
-      animation:float 3s ease-in-out infinite;
+    /* 背景装饰光斑 */
+    .blob{position:absolute;border-radius:50%;filter:blur(60px);opacity:.35;z-index:0}
+    .blob.b1{width:280px;height:280px;background:#7c3aed;top:-80px;right:-60px}
+    .blob.b2{width:220px;height:220px;background:#06b6d4;bottom:-60px;left:-40px}
+    .blob.b3{width:160px;height:160px;background:#ec4899;top:40%;left:-30px;opacity:.2}
+    /* Logo 容器 */
+    .logo-wrap{
+      width:110px;height:110px;border-radius:28px;
+      background:rgba(255,255,255,.18);
+      backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
+      border:1.5px solid rgba(255,255,255,.3);
+      display:flex;align-items:center;justify-content:center;
+      margin-bottom:24px;z-index:1;
+      box-shadow:
+        0 20px 50px rgba(0,0,0,.25),
+        0 8px 20px rgba(0,0,0,.15),
+        inset 0 1px 0 rgba(255,255,255,.3);
+      animation:float 3.5s ease-in-out infinite;
     }
-    @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
-    .name{font-size:28px;font-weight:600;margin-bottom:6px;z-index:1;letter-spacing:.5px}
-    .desc{font-size:13px;opacity:.75;margin-bottom:40px;z-index:1}
-    .wrap{width:220px;z-index:1}
-    .bar{width:100%;height:4px;background:rgba(255,255,255,.2);border-radius:2px;overflow:hidden;margin-bottom:12px}
-    .fill{height:100%;background:#fff;border-radius:2px;width:0%;transition:width .3s ease;box-shadow:0 0 10px rgba(255,255,255,.4)}
-    .text{font-size:12px;opacity:.7;text-align:center;min-height:18px}
-    .ver{position:absolute;bottom:20px;left:0;right:0;text-align:center;font-size:11px;opacity:.5;z-index:1}
+    .logo-wrap .icon{font-size:54px;filter:drop-shadow(0 4px 8px rgba(0,0,0,.2))}
+    @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+    .name{font-size:34px;font-weight:700;margin-bottom:8px;z-index:1;letter-spacing:1px;
+      text-shadow:0 2px 10px rgba(0,0,0,.15)}
+    .desc{font-size:15px;opacity:.8;margin-bottom:48px;z-index:1;letter-spacing:.5px}
+    .wrap{width:300px;z-index:1}
+    .bar{
+      width:100%;height:6px;
+      background:rgba(255,255,255,.18);
+      border-radius:3px;overflow:hidden;margin-bottom:16px;
+      box-shadow:inset 0 1px 3px rgba(0,0,0,.1);
+    }
+    .fill{
+      height:100%;
+      background:linear-gradient(90deg,#fff 0%,#e0e7ff 100%);
+      border-radius:3px;width:0%;
+      transition:width .35s cubic-bezier(.4,0,.2,1);
+      box-shadow:0 0 16px rgba(255,255,255,.6),0 0 4px rgba(255,255,255,.8);
+      position:relative;
+    }
+    .fill::after{
+      content:'';position:absolute;top:0;right:0;bottom:0;
+      width:20px;
+      background:linear-gradient(90deg,transparent,rgba(255,255,255,.6),transparent);
+      animation:shine 1.5s infinite;
+    }
+    @keyframes shine{0%{transform:translateX(-100%)}100%{transform:translateX(280px)}}
+    .text{font-size:13px;opacity:.78;text-align:center;min-height:20px;letter-spacing:.3px}
+    .ver{position:absolute;bottom:28px;left:0;right:0;text-align:center;font-size:12px;opacity:.55;z-index:1;letter-spacing:.5px}
   </style>
 </head>
 <body>
-  <div class="logo">📝</div>
+  <div class="blob b1"></div>
+  <div class="blob b2"></div>
+  <div class="blob b3"></div>
+  <div class="logo-wrap"><div class="icon">📝</div></div>
   <div class="name">LaoflchMD</div>
   <div class="desc">跨平台 Markdown 编辑器</div>
   <div class="wrap">
@@ -80,14 +113,14 @@ function createSplashWindow(): void {
   const version = getAppVersion()
 
   splashWindow = new BrowserWindow({
-    width: 420,
-    height: 320,
+    width: 560,
+    height: 400,
     frame: false,
     resizable: false,
     movable: true,
     alwaysOnTop: true,
     center: true,
-    show: false,
+    show: true,
     backgroundColor: '#667eea',
     webPreferences: {
       nodeIntegration: true,
@@ -97,10 +130,6 @@ function createSplashWindow(): void {
 
   const dataUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(getSplashHtml(version))
   splashWindow.loadURL(dataUrl)
-
-  splashWindow.once('ready-to-show', () => {
-    splashWindow?.show()
-  })
 }
 
 function updateSplashProgress(progress: number, message?: string): void {
@@ -651,17 +680,17 @@ function getExportStyles(): string {
 }
 
 app.whenReady().then(() => {
-  // 先显示闪屏窗口（很快），后台加载主窗口
+  // 先显示闪屏窗口（闪屏窗口轻量，立即展示）
   createSplashWindow()
-  updateSplashProgress(10, '正在启动应用...')
+  updateSplashProgress(15, '正在启动应用...')
 
-  // 稍作延迟让闪屏先渲染出来
+  // 等闪屏渲染出来后再创建主窗口（主窗口较重，避免抢占资源导致闪屏卡）
   setTimeout(() => {
-    updateSplashProgress(25, '加载编辑器组件...')
+    updateSplashProgress(30, '加载编辑器组件...')
     createWindow()
     registerS3Handlers()
-    updateSplashProgress(60, '初始化服务...')
-  }, 50)
+    updateSplashProgress(65, '初始化服务...')
+  }, 200)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
