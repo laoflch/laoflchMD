@@ -156,10 +156,11 @@ const md = new MarkdownIt({
   typographer: true,
   breaks: true,
   highlight: (str: string, lang: string): string => {
-    const key = `\u0000SHIKI${hlSeq++}\u0000`
+    const key = `SHIKI${hlSeq++}`
     pendingCodeBlocks.push({ key, code: str, lang: lang || '' })
-    // 骨架：先渲染转义的原始代码，Shiki 高亮完成后整体替换
-    return `<pre class="code-block"><code class="language-${escapeHtml(lang || '')}">${escapeHtml(str)}</code></pre>`
+    // 骨架：先渲染转义的原始代码，并带上唯一锚点 data-hl；
+    // Shiki 高亮完成后用锚点把整个代码块替换为带高亮的 HTML
+    return `<pre class="code-block" data-hl="${key}"><code class="language-${escapeHtml(lang || '')}">${escapeHtml(str)}</code></pre>`
   }
 })
 
@@ -322,7 +323,11 @@ function hello() {
 
     let final = skeleton
     for (const r of results) {
-      final = final.split(r.key).join(r.html)
+      // 用 data-hl 锚点精确定位骨架代码块，整体替换为 Shiki 高亮后的 HTML
+      final = final.replace(
+        new RegExp(`<pre class="code-block" data-hl="${r.key}">[\\s\\S]*?<\\/pre>`),
+        r.html
+      )
     }
     renderedHtml.value = final
   }
