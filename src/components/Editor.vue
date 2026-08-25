@@ -435,33 +435,6 @@ function syncPreviewToEditor() {
   font-variant-ligatures: none;
 }
 
-:deep(.markdown-body pre code.hljs) {
-  background: var(--code-bg);
-}
-
-/* Ensure highlight.js syntax colors are applied with proper specificity */
-:deep(.markdown-body .hljs) {
-  color: inherit;
-}
-:deep(.markdown-body .hljs-keyword) {
-  color: #d73a49 !important;
-}
-:deep(.markdown-body .hljs-string) {
-  color: #032f62 !important;
-}
-:deep(.markdown-body .hljs-comment) {
-  color: #6a737d !important;
-}
-:deep(.markdown-body .hljs-title.function_) {
-  color: #6f42c1 !important;
-}
-:deep(.markdown-body .hljs-number) {
-  color: #005cc5 !important;
-}
-:deep(.markdown-body .hljs-built_in) {
-  color: #e36209 !important;
-}
-
 :deep(.markdown-body blockquote) {
   padding: 0 1em;
   color: var(--blockquote-color);

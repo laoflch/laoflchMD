@@ -1,78 +1,167 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useS3Store } from './s3'
 import MarkdownIt from 'markdown-it'
 import TurndownService from 'turndown'
-import hljs from 'highlight.js/lib/core'
-import javascript from 'highlight.js/lib/languages/javascript'
-import json from 'highlight.js/lib/languages/json'
-import markdown from 'highlight.js/lib/languages/markdown'
+import { createHighlighterCore, isPlainLang, type HighlighterCore } from 'shiki/core'
+import { createJavaScriptRegexEngine } from 'shiki/engine/javascript'
+import type { ShikiTransformer } from '@shikijs/types'
 
-// ——— 懒加载语言模块（首屏只同步注册常用语言，其余异步预注册） ———
-// 使用动态 import()：Vite 会将其拆分为独立 chunk，浏览器环境可用
-const lazyLanguages: Array<[string, () => Promise<any>]> = [
-  ['bash', () => import('highlight.js/lib/languages/bash')],
-  ['shell', () => import('highlight.js/lib/languages/shell')],
-  ['typescript', () => import('highlight.js/lib/languages/typescript')],
-  ['css', () => import('highlight.js/lib/languages/css')],
-  ['scss', () => import('highlight.js/lib/languages/scss')],
-  ['xml', () => import('highlight.js/lib/languages/xml')],
-  ['python', () => import('highlight.js/lib/languages/python')],
-  ['java', () => import('highlight.js/lib/languages/java')],
-  ['cpp', () => import('highlight.js/lib/languages/cpp')],
-  ['csharp', () => import('highlight.js/lib/languages/csharp')],
-  ['go', () => import('highlight.js/lib/languages/go')],
-  ['rust', () => import('highlight.js/lib/languages/rust')],
-  ['php', () => import('highlight.js/lib/languages/php')],
-  ['sql', () => import('highlight.js/lib/languages/sql')],
-  ['yaml', () => import('highlight.js/lib/languages/yaml')],
-  ['dockerfile', () => import('highlight.js/lib/languages/dockerfile')],
-  ['diff', () => import('highlight.js/lib/languages/diff')],
-  ['kotlin', () => import('highlight.js/lib/languages/kotlin')],
-  ['swift', () => import('highlight.js/lib/languages/swift')],
-  ['ruby', () => import('highlight.js/lib/languages/ruby')],
-  ['lua', () => import('highlight.js/lib/languages/lua')],
-  ['perl', () => import('highlight.js/lib/languages/perl')],
-  ['r', () => import('highlight.js/lib/languages/r')],
-  ['plaintext', () => import('highlight.js/lib/languages/plaintext')],
-  ['nginx', () => import('highlight.js/lib/languages/nginx')]
-]
+// ——— Shiki 语法高亮（VS Code 同款 TextMate 引擎） ———
+// 首屏只加载常用语言 + 两个主题；其余语言在首次遇到时动态 import 加载。
 
-let lazyLanguagesRegistered = false
-let lazyLanguagesPromise: Promise<void> | null = null
-
-// 响应式标记：全部语言注册完成。renderedHtml 依赖它，注册完成后自动重渲染，
-// 解决「首次渲染时语言尚未加载完导致代码块无高亮」的时序问题
-const languagesReady = ref(false)
-
-// 首屏只注册最常用的 3 种语言（足够欢迎页展示）
-hljs.registerLanguage('javascript', javascript)
-hljs.registerLanguage('json', json)
-hljs.registerLanguage('markdown', markdown)
-
-// 异步预注册其余语言（模块加载后立即触发，不阻塞首屏渲染）
-function ensureAllLanguages(): Promise<void> {
-  if (lazyLanguagesPromise) return lazyLanguagesPromise
-  if (lazyLanguagesRegistered) return Promise.resolve()
-  lazyLanguagesPromise = (async () => {
-    await Promise.all(
-      lazyLanguages.map(async ([name, loader]) => {
-        try {
-          const mod = await loader()
-          hljs.registerLanguage(name, mod.default || mod)
-        } catch {
-          // 静默忽略加载失败的语言
-        }
-      })
-    )
-    lazyLanguagesRegistered = true
-    languagesReady.value = true
-  })()
-  return lazyLanguagesPromise
+// 语言加载器映射：显式列出，Vite 只把下列语言打包为独立 chunk，按需加载
+const langImporters: Record<string, () => Promise<any>> = {
+  javascript: () => import('@shikijs/langs/javascript'),
+  typescript: () => import('@shikijs/langs/typescript'),
+  json: () => import('@shikijs/langs/json'),
+  markdown: () => import('@shikijs/langs/markdown'),
+  bash: () => import('@shikijs/langs/bash'),
+  shell: () => import('@shikijs/langs/shell'),
+  css: () => import('@shikijs/langs/css'),
+  scss: () => import('@shikijs/langs/scss'),
+  xml: () => import('@shikijs/langs/xml'),
+  python: () => import('@shikijs/langs/python'),
+  java: () => import('@shikijs/langs/java'),
+  cpp: () => import('@shikijs/langs/cpp'),
+  csharp: () => import('@shikijs/langs/csharp'),
+  go: () => import('@shikijs/langs/go'),
+  rust: () => import('@shikijs/langs/rust'),
+  php: () => import('@shikijs/langs/php'),
+  sql: () => import('@shikijs/langs/sql'),
+  yaml: () => import('@shikijs/langs/yaml'),
+  dockerfile: () => import('@shikijs/langs/dockerfile'),
+  diff: () => import('@shikijs/langs/diff'),
+  kotlin: () => import('@shikijs/langs/kotlin'),
+  swift: () => import('@shikijs/langs/swift'),
+  ruby: () => import('@shikijs/langs/ruby'),
+  lua: () => import('@shikijs/langs/lua'),
+  perl: () => import('@shikijs/langs/perl'),
+  r: () => import('@shikijs/langs/r'),
+  nginx: () => import('@shikijs/langs/nginx')
 }
 
-// 立即启动语言预注册（不阻塞模块初始化）
-void ensureAllLanguages()
+// 首屏加载的常用语言（足够欢迎页/常见场景，保持启动轻量；其余语言按需动态加载）
+const INITIAL_LANGS = ['javascript', 'json', 'markdown', 'bash']
+
+const THEMES = {
+  light: () => import('@shikijs/themes/github-light'),
+  dark: () => import('@shikijs/themes/github-dark')
+}
+
+// 当前主题（亮/暗），由 store 同步；高亮时据此选择 Shiki 主题
+const currentThemeName = ref<'light' | 'dark'>('light')
+
+let highlighterPromise: Promise<HighlighterCore> | null = null
+
+function getHighlighter(): Promise<HighlighterCore> {
+  if (!highlighterPromise) {
+    highlighterPromise = createHighlighterCore({
+      themes: [THEMES.light(), THEMES.dark()],
+      langs: INITIAL_LANGS.map((l) => langImporters[l]()),
+      engine: createJavaScriptRegexEngine()
+    }).catch((err: unknown) => {
+      console.error('[shiki] highlighter init failed', err)
+      throw err
+    })
+  }
+  return highlighterPromise
+}
+
+// 按需加载语言（带去重，避免并发重复加载同一语言）
+const loadingLangs = new Set<string>()
+async function ensureLanguage(hi: HighlighterCore, lang: string): Promise<boolean> {
+  // plaintext/text/txt 是 shiki 内置特殊语言，无需加载 grammar
+  if (isPlainLang(lang)) return true
+  if (hi.getLoadedLanguages().includes(lang)) return true
+  if (loadingLangs.has(lang)) {
+    // 等待并发加载完成
+    while (loadingLangs.has(lang)) {
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    return hi.getLoadedLanguages().includes(lang)
+  }
+  loadingLangs.add(lang)
+  try {
+    const importer = langImporters[lang]
+    if (!importer) return false
+    await hi.loadLanguage(importer())
+    return true
+  } catch {
+    return false
+  } finally {
+    loadingLangs.delete(lang)
+  }
+}
+
+// 给 Shiki 输出附加 class，便于 Turndown 反向转换时识别代码块与语言
+function codeBlockTransformer(lang: string): ShikiTransformer {
+  return {
+    name: 'code-block-meta',
+    pre(node) {
+      const cls = Array.isArray(node.properties.class)
+        ? node.properties.class.map(String)
+        : []
+      if (!cls.includes('code-block')) cls.push('code-block')
+      node.properties.class = cls
+    },
+    code(node) {
+      const cls = Array.isArray(node.properties.class)
+        ? node.properties.class.map(String)
+        : []
+      if (!cls.includes(`language-${lang}`)) cls.push(`language-${lang}`)
+      node.properties.class = cls
+    }
+  }
+}
+
+async function highlightCode(code: string, lang: string): Promise<string> {
+  const cleanLang = (lang || '').trim().toLowerCase()
+  try {
+    const hi = await getHighlighter()
+    if (cleanLang && (await ensureLanguage(hi, cleanLang))) {
+      return hi.codeToHtml(code, {
+        lang: cleanLang,
+        theme: currentThemeName.value === 'dark' ? 'github-dark' : 'github-light',
+        transformers: [codeBlockTransformer(cleanLang)]
+      })
+    }
+  } catch {
+    // 高亮失败，fallthrough 到纯文本
+  }
+  return `<pre class="code-block"><code>${escapeHtml(code)}</code></pre>`
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+// ——— MarkdownIt：highlight 回调同步返回「骨架」（转义原始代码），
+// 异步 Shiki 高亮完成后整体替换为带高亮的 HTML ———
+interface PendingCodeBlock {
+  key: string
+  code: string
+  lang: string
+}
+let pendingCodeBlocks: PendingCodeBlock[] = []
+let hlSeq = 0
+
+const md = new MarkdownIt({
+  html: true,
+  linkify: true,
+  typographer: true,
+  breaks: true,
+  highlight: (str: string, lang: string): string => {
+    const key = `\u0000SHIKI${hlSeq++}\u0000`
+    pendingCodeBlocks.push({ key, code: str, lang: lang || '' })
+    // 骨架：先渲染转义的原始代码，Shiki 高亮完成后整体替换
+    return `<pre class="code-block"><code class="language-${escapeHtml(lang || '')}">${escapeHtml(str)}</code></pre>`
+  }
+})
 
 // 给渲染出的标题加 id 锚点，便于大纲跳转
 function slugify(text: string): string {
@@ -82,25 +171,6 @@ function slugify(text: string): string {
     .replace(/[\s]+/g, '-')
     .replace(/[^\w\u4e00-\u9fa5-]/g, '')
 }
-
-const md = new MarkdownIt({
-  html: true,
-  linkify: true,
-  typographer: true,
-  breaks: true,
-  highlight: (str: string, lang: string): string => {
-    if (lang && hljs.getLanguage(lang)) {
-      try {
-        return `<pre class="code-block"><code class="hljs language-${lang}">${
-          hljs.highlight(str, { language: lang, ignoreIllegals: true }).value
-        }</code></pre>`
-      } catch (_) {
-        // fallthrough
-      }
-    }
-    return `<pre class="code-block"><code class="hljs">${md.utils.escapeHtml(str)}</code></pre>`
-  }
-})
 
 const originalHeadingOpen = md.renderer.rules.heading_open || function (tokens, idx, options, _env, self) {
   return self.renderToken(tokens, idx, options)
@@ -128,7 +198,7 @@ function getTurndown(): TurndownService {
     emDelimiter: '*'
   })
 
-  // 额外的代码块规则：从 highlight.js 生成的结构中恢复原始代码
+  // 额外的代码块规则：从 Shiki 生成的结构（class="code-block" + language-xxx）恢复原始代码
   turndown.addRule('codeBlockHighlighted', {
     filter: (node: any) =>
       node.nodeName === 'PRE' &&
@@ -230,12 +300,48 @@ function hello() {
     }
   }
 
-  const renderedHtml = computed(() => {
-    // 依赖 languagesReady：语言异步注册完成后触发重新渲染，
-    // 确保最初未注册的语言（如 rust）也能正确高亮
-    languagesReady.value
-    return md.render(content.value)
-  })
+  // —— 异步渲染：先输出骨架（未高亮代码），Shiki 高亮完成后替换 ——
+  const renderedHtml = ref('')
+  let renderSeq = 0
+
+  async function renderMarkdown(): Promise<void> {
+    const batch = ++renderSeq
+    const pending: PendingCodeBlock[] = []
+    pendingCodeBlocks = pending
+
+    const skeleton = md.render(content.value)
+    if (batch !== renderSeq) return
+    renderedHtml.value = skeleton
+
+    if (pending.length === 0) return
+
+    const results = await Promise.all(
+      pending.map(async (p) => ({ key: p.key, html: await highlightCode(p.code, p.lang) }))
+    )
+    if (batch !== renderSeq) return
+
+    let final = skeleton
+    for (const r of results) {
+      final = final.split(r.key).join(r.html)
+    }
+    renderedHtml.value = final
+  }
+
+  // 内容变化或主题切换时重新渲染
+  watch(
+    [content, isDarkTheme],
+    () => {
+      currentThemeName.value = isDarkTheme.value ? 'dark' : 'light'
+      void renderMarkdown()
+    },
+    { immediate: true }
+  )
+
+  // 供导出（HTML/PDF）使用：确保拿到最新渲染结果
+  async function ensureRendered(): Promise<string> {
+    await renderMarkdown()
+    return renderedHtml.value
+  }
 
   const fileName = computed(() => {
     if (filePath.value) {
@@ -309,7 +415,7 @@ function hello() {
       const newText = before + selectedText + after
       content.value =
         content.value.substring(0, start) + newText + content.value.substring(end)
-      
+
       // Restore cursor position after Vue reactivity
       requestAnimationFrame(() => {
         textarea.focus()
@@ -388,6 +494,7 @@ function hello() {
     isModified,
     renderedHtml,
     fileName,
+    ensureRendered,
     setContent,
     setContentFromHtml,
     markModified,
