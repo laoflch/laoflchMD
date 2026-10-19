@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { useS3Store } from './s3'
+import { useEditorDom } from '../composables/useEditorDom'
 import MarkdownIt from 'markdown-it'
 import TurndownService from 'turndown'
 import { createHighlighterCore, isPlainLang, type HighlighterCore } from 'shiki/core'
@@ -404,29 +405,14 @@ function hello() {
   }
 
   function insertText(before: string, after: string = '') {
-    const selection = window.getSelection()
-    if (!selection || !selection.rangeCount) {
+    // 通过编辑器 DOM 句柄在 textarea 当前选区插入，store 不再直接查 DOM
+    const next = useEditorDom().insertAtSelection(before, after, content.value)
+    if (next === null) {
+      // 退化：无可用编辑器节点（组件未挂载等）时追加到末尾
       content.value += before + after
       return
     }
-
-    // When in edit mode, the textarea approach is simpler
-    // We use textarea-based insertion
-    const textarea = document.querySelector('.editor-textarea') as HTMLTextAreaElement
-    if (textarea) {
-      const start = textarea.selectionStart
-      const end = textarea.selectionEnd
-      const selectedText = content.value.substring(start, end)
-      const newText = before + selectedText + after
-      content.value =
-        content.value.substring(0, start) + newText + content.value.substring(end)
-
-      // Restore cursor position after Vue reactivity
-      requestAnimationFrame(() => {
-        textarea.focus()
-        textarea.selectionStart = textarea.selectionEnd = start + before.length + selectedText.length
-      })
-    }
+    setContent(next)
   }
 
   function newFile() {
@@ -443,12 +429,9 @@ function hello() {
   // 若当前处于可编辑预览态（contenteditable），先把 DOM 中的最新内容同步回 content.value，
   // 否则 Ctrl+S 时（焦点仍在内容区内、未触发 blur）会保存到旧内容。
   function syncEditablePreviewToContent() {
-    if (typeof document === 'undefined') return
-    const el = document.querySelector(
-      '.preview-content[contenteditable="true"]'
-    ) as HTMLElement | null
-    if (el && el.innerHTML !== undefined) {
-      setContentFromHtml(el.innerHTML)
+    const html = useEditorDom().getEditableHtml()
+    if (html !== null) {
+      setContentFromHtml(html)
     }
   }
 

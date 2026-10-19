@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useEditorStore } from '../stores/editor'
+import { useEditorDom } from '../composables/useEditorDom'
 
 const store = useEditorStore()
+const editorDom = useEditorDom()
 
 interface HeadingItem {
   text: string
@@ -48,43 +50,8 @@ function slugify(text: string) {
 }
 
 function scrollToLine(line: number, text: string) {
-  // 预览模式 / 分割模式：跳到预览区对应标题
-  const previewScroll = document.querySelector('.preview-scroll') as HTMLElement | null
-    || document.querySelector('.preview-pane') as HTMLElement | null
-  const headingId = 'heading-' + slugify(text)
-  if (previewScroll) {
-    const heading = previewScroll.querySelector(`#${headingId}`) as HTMLElement | null
-    if (heading) {
-      heading.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      // 编辑区也同步（如果存在）
-      syncEditor(line)
-      return
-    }
-  }
-
-  // 纯编辑模式：精确滚动 textarea
-  syncEditor(line)
-}
-
-function syncEditor(line: number) {
-  const textarea = document.querySelector('.editor-textarea') as HTMLTextAreaElement | null
-  if (!textarea) return
-
-  const lines = store.content.split('\n')
-  let charIndex = 0
-  for (let i = 0; i < line; i++) {
-    charIndex += lines[i].length + 1
-  }
-
-  // 将光标定位到标题行
-  textarea.selectionStart = textarea.selectionEnd = charIndex
-  textarea.focus()
-
-  // 用临时元素精确测量行高（考虑 padding）
-  const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 22
-  const paddingTop = parseFloat(getComputedStyle(textarea).paddingTop) || 0
-  const targetTop = line * lineHeight + paddingTop
-  textarea.scrollTop = targetTop - textarea.clientHeight / 3
+  // 滚动定位统一交给编辑器 DOM 句柄实现（滚动预览区到标题 + 编辑区光标/滚动同步）
+  editorDom.scrollToHeading('heading-' + slugify(text), line, store.content)
 }
 </script>
 

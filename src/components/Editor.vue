@@ -1,14 +1,34 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useDragDivider } from '../composables/useDragDivider'
+import { useEditorDom } from '../composables/useEditorDom'
 import { useEditorStore } from '../stores/editor'
 
 const store = useEditorStore()
+const editorDom = useEditorDom()
 
 const splitRatio = ref(0.5)
 const zoom = ref(1)
 let containerWidth = 1
 let startRatio = 0
+
+// 编辑器 DOM 节点引用：登记到句柄层，供 store / Outline 使用（替代全局 querySelector）
+const textareaRef = ref<HTMLTextAreaElement | null>(null)
+const previewScrollRef = ref<HTMLElement | null>(null)
+const editableRef = ref<HTMLElement | null>(null)
+
+// 视图模式切换 / 挂载卸载时，把当前可见的编辑器节点同步到句柄层
+watch(
+  [textareaRef, previewScrollRef, editableRef],
+  () => {
+    editorDom.register({
+      textarea: textareaRef.value,
+      previewScroll: previewScrollRef.value,
+      editable: editableRef.value
+    })
+  },
+  { immediate: true }
+)
 
 function handleCtrlWheel(e: WheelEvent) {
   if (!e.ctrlKey) return
@@ -26,6 +46,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener('wheel', handleCtrlWheel)
+  editorDom.unregister()
 })
 
 const { isDragging, startDrag: onDividerMouseDown } = useDragDivider({
@@ -119,8 +140,8 @@ let lastEditorRatio = -1
 let lastPreviewRatio = -1
 
 function syncEditorToPreview() {
-  const textarea = document.querySelector('.editor-textarea') as HTMLTextAreaElement
-  const preview = document.querySelector('.preview-pane') as HTMLElement
+  const textarea = textareaRef.value
+  const preview = previewScrollRef.value
   if (!textarea || !preview || textarea.scrollHeight <= textarea.clientHeight) return
 
   const ratio = textarea.scrollTop / (textarea.scrollHeight - textarea.clientHeight)
@@ -133,8 +154,8 @@ function syncEditorToPreview() {
 }
 
 function syncPreviewToEditor() {
-  const textarea = document.querySelector('.editor-textarea') as HTMLTextAreaElement
-  const preview = document.querySelector('.preview-pane') as HTMLElement
+  const textarea = textareaRef.value
+  const preview = previewScrollRef.value
   if (!preview || !textarea || preview.scrollHeight <= preview.clientHeight) return
 
   const ratio = preview.scrollTop / (preview.scrollHeight - preview.clientHeight)
@@ -152,6 +173,7 @@ function syncPreviewToEditor() {
     <!-- Edit mode: textarea only -->
     <div v-if="store.viewMode === 'edit'" class="edit-pane">
       <textarea
+        ref="textareaRef"
         class="editor-textarea"
         :value="store.content"
         @input="onTextareaInput"
@@ -163,8 +185,9 @@ function syncPreviewToEditor() {
 
     <!-- Preview mode: rendered only (editable) -->
     <div v-else-if="store.viewMode === 'preview'" class="preview-pane">
-      <div class="preview-scroll">
+      <div ref="previewScrollRef" class="preview-scroll">
         <div
+          ref="editableRef"
           class="preview-content markdown-body"
           :contenteditable="true"
           v-html="store.renderedHtml"
@@ -186,6 +209,7 @@ function syncPreviewToEditor() {
     <div v-else class="live-pane">
       <div class="live-edit" :style="{ width: (splitRatio * 100) + '%' }">
         <textarea
+          ref="textareaRef"
           class="editor-textarea"
           :value="store.content"
           @input="onTextareaInput"
@@ -196,7 +220,7 @@ function syncPreviewToEditor() {
         ></textarea>
       </div>
       <div class="live-divider" :class="{ dragging: isDragging }" @mousedown="onDividerMouseDown"></div>
-      <div class="live-preview preview-pane" @scroll="syncPreviewToEditor">
+      <div ref="previewScrollRef" class="live-preview preview-pane" @scroll="syncPreviewToEditor">
         <div class="preview-content markdown-body" v-html="store.renderedHtml"></div>
       </div>
     </div>
