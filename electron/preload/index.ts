@@ -89,5 +89,28 @@ contextBridge.exposeInMainWorld('api', {
   s3PutObject: (config: any, bucket: string, key: string, content: string) =>
     ipcRenderer.invoke('s3:putObject', config, bucket, key, content),
   s3DeleteObject: (config: any, bucket: string, key: string) =>
-    ipcRenderer.invoke('s3:deleteObject', config, bucket, key)
+    ipcRenderer.invoke('s3:deleteObject', config, bucket, key),
+
+  // Full-text search (laoflchdb-rust)
+  indexEnsure: (protocol: 'grpc' | 'rest', host: string, port: string) =>
+    ipcRenderer.invoke('index:ensure', protocol, host, port),
+  indexSearch: (
+    protocol: 'grpc' | 'rest',
+    host: string,
+    port: string,
+    query: string,
+    limit?: number
+  ) => ipcRenderer.invoke('index:search', protocol, host, port, query, limit),
+  indexLocalFile: (protocol: 'grpc' | 'rest', host: string, port: string, filePath: string) =>
+    ipcRenderer.invoke('index:indexLocal', protocol, host, port, filePath),
+  indexDir: (protocol: 'grpc' | 'rest', host: string, port: string, dirPath: string) =>
+    ipcRenderer.invoke('index:indexDir', protocol, host, port, dirPath),
+  indexS3File: (
+    protocol: 'grpc' | 'rest',
+    host: string,
+    port: string,
+    config: any,
+    bucket: string,
+    key: string
+  ) => ipcRenderer.invoke('index:indexS3', protocol, host, port, config, bucket, key)
 })

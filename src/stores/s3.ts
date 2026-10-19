@@ -214,6 +214,7 @@ export const useS3Store = defineStore('s3', () => {
     getObject,
     putObject,
     deleteObject,
-    currentFolderKey
+    currentFolderKey,
+    plainConfig
   }
 })

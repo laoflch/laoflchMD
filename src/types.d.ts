@@ -51,6 +51,40 @@ declare global {
       s3GetObject: (config: S3Config, bucket: string, key: string) => Promise<string | null>
       s3PutObject: (config: S3Config, bucket: string, key: string, content: string) => Promise<void>
       s3DeleteObject: (config: S3Config, bucket: string, key: string) => Promise<boolean>
+
+      // Full-text search (laoflchdb-rust)
+      indexEnsure: (
+        protocol: IndexProtocol,
+        host: string,
+        port: string
+      ) => Promise<{ ok: boolean; message: string; created: boolean }>
+      indexSearch: (
+        protocol: IndexProtocol,
+        host: string,
+        port: string,
+        query: string,
+        limit?: number
+      ) => Promise<{ ok: boolean; message: string; results: IndexSearchResult[] }>
+      indexLocalFile: (
+        protocol: IndexProtocol,
+        host: string,
+        port: string,
+        filePath: string
+      ) => Promise<{ ok: boolean; message: string; docId?: string }>
+      indexDir: (
+        protocol: IndexProtocol,
+        host: string,
+        port: string,
+        dirPath: string
+      ) => Promise<{ ok: boolean; message: string; count: number }>
+      indexS3File: (
+        protocol: IndexProtocol,
+        host: string,
+        port: string,
+        config: S3Config,
+        bucket: string,
+        key: string
+      ) => Promise<{ ok: boolean; message: string; docId?: string }>
     }
   }
 }
@@ -88,4 +122,12 @@ export interface VersionNote {
   date: string
   title: string
   changes: string[]
+}
+
+export type IndexProtocol = 'grpc' | 'rest'
+
+export interface IndexSearchResult {
+  docId: string
+  score: number
+  fields: Record<string, string>
 }

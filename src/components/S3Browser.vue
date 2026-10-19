@@ -2,10 +2,12 @@
 import { ref } from 'vue'
 import { useS3Store } from '../stores/s3'
 import { useEditorStore } from '../stores/editor'
+import { useSettingsStore } from '../stores/settings'
 import type { S3ObjectEntry } from '../types'
 
 const s3 = useS3Store()
 const editor = useEditorStore()
+const settings = useSettingsStore()
 
 // 右键菜单
 const contextMenu = ref({ show: false, x: 0, y: 0 })
@@ -24,6 +26,43 @@ function hideContextMenu() {
 function showFileDetails() {
   hideContextMenu()
   showDetailsDialog.value = true
+}
+
+// 全文检索：生成索引
+const indexing = ref(false)
+const indexNotice = ref<{ type: 'ok' | 'err'; text: string } | null>(null)
+let indexNoticeTimer: ReturnType<typeof setTimeout> | null = null
+
+function showIndexNotice(type: 'ok' | 'err', text: string) {
+  indexNotice.value = { type, text }
+  if (indexNoticeTimer) clearTimeout(indexNoticeTimer)
+  indexNoticeTimer = setTimeout(() => {
+    indexNotice.value = null
+  }, 6000)
+}
+
+async function handleIndex() {
+  if (!currentFile.value || !s3.currentBucket) return
+  hideContextMenu()
+  indexing.value = true
+  try {
+    const protocol = settings.indexProtocol
+    const host = protocol === 'grpc' ? settings.grpcHost : settings.restHost
+    const port = protocol === 'grpc' ? settings.grpcPort : settings.restPort
+    const res = await window.api.indexS3File(
+      protocol,
+      host,
+      port,
+      s3.plainConfig(),
+      s3.currentBucket,
+      currentFile.value.key
+    )
+    showIndexNotice(res.ok ? 'ok' : 'err', res.message)
+  } catch (e: unknown) {
+    showIndexNotice('err', e instanceof Error ? e.message : '生成索引失败')
+  } finally {
+    indexing.value = false
+  }
 }
 
 async function deleteFile() {
@@ -238,6 +277,12 @@ async function doSave() {
         </svg>
         显示详情
       </div>
+      <div class="s3-context-menu-item" :class="{ disabled: indexing }" @click="handleIndex">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 4v16M5 12h14"/>
+        </svg>
+        生成索引
+      </div>
       <div class="s3-context-menu-divider"></div>
       <div class="s3-context-menu-item danger" @click="deleteFile">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
@@ -245,6 +290,11 @@ async function doSave() {
         </svg>
         删除
       </div>
+    </div>
+
+    <!-- 索引提示 -->
+    <div v-if="indexNotice" class="s3-index-notice" :class="indexNotice.type" @click="indexNotice = null">
+      {{ indexNotice.text }}
     </div>
 
     <!-- 文件详情对话框 -->
@@ -314,6 +364,7 @@ async function doSave() {
   padding: 10px 12px;
   box-sizing: border-box;
   user-select: none;
+  position: relative;
 }
 
 .s3-config {
@@ -588,6 +639,41 @@ async function doSave() {
 
 .s3-context-menu-item:hover {
   background: var(--bg-tertiary);
+}
+
+.s3-context-menu-item.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.s3-context-menu-item.disabled:hover {
+  background: transparent;
+}
+
+/* 索引提示 */
+.s3-index-notice {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  z-index: 150;
+  word-break: break-all;
+}
+
+.s3-index-notice.ok {
+  background: rgba(40, 167, 69, 0.15);
+  color: #28a745;
+  border: 1px solid rgba(40, 167, 69, 0.4);
+}
+
+.s3-index-notice.err {
+  background: rgba(220, 53, 69, 0.15);
+  color: #dc3545;
+  border: 1px solid rgba(220, 53, 69, 0.4);
 }
 
 .s3-context-menu-item.danger {

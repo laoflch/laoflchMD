@@ -1,16 +1,20 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, watch, ref } from 'vue'
 import { useEditorStore } from './stores/editor'
+import { useFindReplace } from './composables/useFindReplace'
 import TitleBar from './components/TitleBar.vue'
 import Toolbar from './components/Toolbar.vue'
 import Editor from './components/Editor.vue'
-import Sidebar from './components/Sidebar.vue'
+import Sidebar, { type SidebarTab } from './components/Sidebar.vue'
 import AboutDialog from './components/AboutDialog.vue'
+import SettingsDialog from './components/SettingsDialog.vue'
 
 const store = useEditorStore()
+const findReplace = useFindReplace()
 const showSidebar = ref(false)
-const sidebarTab = ref<'files' | 's3' | 'outline'>('files')
+const sidebarTab = ref<SidebarTab>('files')
 const showAbout = ref(false)
+const showSettings = ref(false)
 
 // Listen for menu events from Electron main process
 const cleanupFns: (() => void)[] = []
@@ -96,6 +100,23 @@ function onGlobalKeydown(e: KeyboardEvent) {
     e.preventDefault()
     toggleSidebar()
   }
+  // Ctrl+F — 查找
+  if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'f') {
+    e.preventDefault()
+    findReplace.openFind()
+    return
+  }
+  // Ctrl+H — 替换
+  if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'h') {
+    e.preventDefault()
+    findReplace.openReplace()
+    return
+  }
+  // Esc — 关闭查找替换
+  if (e.key === 'Escape' && findReplace.isOpen.value) {
+    e.preventDefault()
+    findReplace.close()
+  }
 }
 
 if (typeof document !== 'undefined') {
@@ -123,11 +144,13 @@ watch(() => store.fileName, (name) => {
           v-if="showSidebar"
           v-model="sidebarTab"
           @close="showSidebar = false"
+          @open-settings="showSettings = true"
         />
       </transition>
       <Editor />
     </div>
     <AboutDialog :open="showAbout" @close="showAbout = false" />
+    <SettingsDialog :open="showSettings" @close="showSettings = false" />
   </div>
 </template>
 

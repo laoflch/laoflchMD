@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1104.0",
+    "@grpc/grpc-js": "^1.12.6",
     "@shikijs/engine-javascript": "^4.4.3",
     "@types/turndown": "^5.0.6",
     "highlight.js": "^11.11.1",

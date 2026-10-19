@@ -78,5 +78,11 @@ electron.contextBridge.exposeInMainWorld("api", {
   s3ListObjects: (config, bucket, prefix) => electron.ipcRenderer.invoke("s3:listObjects", config, bucket, prefix),
   s3GetObject: (config, bucket, key) => electron.ipcRenderer.invoke("s3:getObject", config, bucket, key),
   s3PutObject: (config, bucket, key, content) => electron.ipcRenderer.invoke("s3:putObject", config, bucket, key, content),
-  s3DeleteObject: (config, bucket, key) => electron.ipcRenderer.invoke("s3:deleteObject", config, bucket, key)
+  s3DeleteObject: (config, bucket, key) => electron.ipcRenderer.invoke("s3:deleteObject", config, bucket, key),
+  // Full-text search (laoflchdb-rust)
+  indexEnsure: (protocol, host, port) => electron.ipcRenderer.invoke("index:ensure", protocol, host, port),
+  indexSearch: (protocol, host, port, query, limit) => electron.ipcRenderer.invoke("index:search", protocol, host, port, query, limit),
+  indexLocalFile: (protocol, host, port, filePath) => electron.ipcRenderer.invoke("index:indexLocal", protocol, host, port, filePath),
+  indexDir: (protocol, host, port, dirPath) => electron.ipcRenderer.invoke("index:indexDir", protocol, host, port, dirPath),
+  indexS3File: (protocol, host, port, config, bucket, key) => electron.ipcRenderer.invoke("index:indexS3", protocol, host, port, config, bucket, key)
 });

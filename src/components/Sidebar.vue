@@ -4,11 +4,15 @@ import { useDragDivider } from '../composables/useDragDivider'
 import FileTree from './FileTree.vue'
 import S3Browser from './S3Browser.vue'
 import Outline from './Outline.vue'
+import SearchPanel from './SearchPanel.vue'
 
-const props = defineProps<{ modelValue: 'files' | 's3' | 'outline' }>()
+export type SidebarTab = 'files' | 's3' | 'search' | 'outline'
+
+const props = defineProps<{ modelValue: SidebarTab }>()
 const emit = defineEmits<{
-  'update:modelValue': [value: 'files' | 's3' | 'outline']
+  'update:modelValue': [value: SidebarTab]
   close: []
+  'open-settings': []
 }>()
 
 const SIDEBAR_WIDTH_KEY = 'laoflchmd.sidebar.width'
@@ -26,7 +30,7 @@ onMounted(() => {
   }
 })
 
-function switchTab(tab: 'files' | 's3' | 'outline') {
+function switchTab(tab: SidebarTab) {
   emit('update:modelValue', tab)
 }
 
@@ -74,6 +78,17 @@ const { isDragging, startDrag } = useDragDivider({
       </button>
       <button
         class="sidebar-tab"
+        :class="{ active: modelValue === 'search' }"
+        @click="switchTab('search')"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="7"/>
+          <path d="m21 21-4.35-4.35"/>
+        </svg>
+        <span>全文检索</span>
+      </button>
+      <button
+        class="sidebar-tab"
         :class="{ active: modelValue === 'outline' }"
         @click="switchTab('outline')"
       >
@@ -92,7 +107,17 @@ const { isDragging, startDrag } = useDragDivider({
     <div class="sidebar-body">
       <FileTree v-show="modelValue === 'files'" />
       <S3Browser v-show="modelValue === 's3'" />
+      <SearchPanel v-show="modelValue === 'search'" />
       <Outline v-show="modelValue === 'outline'" />
+    </div>
+    <div class="sidebar-footer">
+      <button class="sidebar-settings" title="全局设置" @click="emit('open-settings')">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+        <span>设置</span>
+      </button>
     </div>
     <div
       class="sidebar-resizer"
@@ -171,6 +196,32 @@ const { isDragging, startDrag } = useDragDivider({
   min-height: 0;
   display: flex;
   overflow: hidden;
+}
+
+.sidebar-footer {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-sidebar);
+  padding: 4px 8px;
+}
+
+.sidebar-settings {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.sidebar-settings:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
 }
 
 .sidebar-resizer {

@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, Menu, nativeTheme } from 'electron
 import { join, dirname, basename, extname } from 'path'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, renameSync, unlinkSync, rmdirSync } from 'fs'
 import { registerS3Handlers } from './s3'
+import { registerIndexSearchHandlers } from './indexSearch'
 import { VERSION_NOTES, type VersionNote } from './versionInfo'
 
 let mainWindow: BrowserWindow | null = null
@@ -689,6 +690,7 @@ app.whenReady().then(() => {
     updateSplashProgress(30, '加载编辑器组件...')
     createWindow()
     registerS3Handlers()
+    registerIndexSearchHandlers()
     updateSplashProgress(65, '初始化服务...')
   }, 200)
 

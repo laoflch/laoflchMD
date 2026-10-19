@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { useEditorStore, type ViewMode } from '../stores/editor'
+import { useFindReplace } from '../composables/useFindReplace'
 
 const store = useEditorStore()
+const findReplace = useFindReplace()
 
 defineProps<{
   showSidebar: boolean
@@ -137,6 +139,14 @@ async function handleSaveAs() {
     <div class="toolbar-spacer"></div>
 
     <div class="toolbar-group">
+      <button class="tool-btn" title="查找 (Ctrl+F)" @click="findReplace.openFind()">
+        <span class="tool-icon">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#569cd6" stroke-width="1.5">
+            <circle cx="7" cy="7" r="4.5"/>
+            <path d="M10.5 10.5 14 14"/>
+          </svg>
+        </span>
+      </button>
       <button class="tool-btn" title="切换主题 (Ctrl+Shift+T)" @click="store.toggleTheme()">
         <span class="tool-icon">{{ store.isDarkTheme ? '☀️' : '🌙' }}</span>
         <span class="tool-label">{{ store.isDarkTheme ? '亮色' : '暗色' }}</span>

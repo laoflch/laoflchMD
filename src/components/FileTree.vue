@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted, watch, nextTick } from 'vue'
 import { useEditorStore } from '../stores/editor'
+import { useSettingsStore } from '../stores/settings'
 import type { FileEntry } from '../types'
 import TreeNodeItem from './TreeNodeItem.vue'
 
 const store = useEditorStore()
+const settings = useSettingsStore()
 
 const emit = defineEmits<{
   close: []
@@ -171,6 +173,43 @@ async function handleRenameComplete(oldPath: string, newPath: string | null) {
   }
 }
 
+// 全文检索：生成索引
+const indexing = ref(false)
+const indexNotice = ref<{ type: 'ok' | 'err'; text: string } | null>(null)
+let indexNoticeTimer: ReturnType<typeof setTimeout> | null = null
+
+function showIndexNotice(type: 'ok' | 'err', text: string) {
+  indexNotice.value = { type, text }
+  if (indexNoticeTimer) clearTimeout(indexNoticeTimer)
+  indexNoticeTimer = setTimeout(() => {
+    indexNotice.value = null
+  }, 6000)
+}
+
+async function handleIndex() {
+  closeContextMenu()
+  const targetPath = contextMenu.value.targetPath
+  const isDir = contextMenu.value.isDirectory
+  if (!targetPath) return
+  indexing.value = true
+  try {
+    const protocol = settings.indexProtocol
+    const host = protocol === 'grpc' ? settings.grpcHost : settings.restHost
+    const port = protocol === 'grpc' ? settings.grpcPort : settings.restPort
+    if (isDir) {
+      const res = await window.api.indexDir(protocol, host, port, targetPath)
+      showIndexNotice(res.ok ? 'ok' : 'err', res.message)
+    } else {
+      const res = await window.api.indexLocalFile(protocol, host, port, targetPath)
+      showIndexNotice(res.ok ? 'ok' : 'err', res.message)
+    }
+  } catch (e: unknown) {
+    showIndexNotice('err', e instanceof Error ? e.message : '生成索引失败')
+  } finally {
+    indexing.value = false
+  }
+}
+
 // Click outside context menu to close it
 if (typeof document !== 'undefined') {
   document.addEventListener('click', (e) => {
@@ -297,6 +336,12 @@ defineExpose({ refreshTree, openDir })
         </svg>
         重命名
       </div>
+      <div class="context-menu-item" :class="{ disabled: indexing }" @click="handleIndex">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M8 2.5v11M3.5 8h9"/>
+        </svg>
+        生成索引
+      </div>
       <div class="context-menu-divider"></div>
       <div class="context-menu-item danger" @click="handleDelete">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
@@ -305,6 +350,11 @@ defineExpose({ refreshTree, openDir })
         </svg>
         删除
       </div>
+    </div>
+
+    <!-- 索引提示 -->
+    <div v-if="indexNotice" class="index-notice" :class="indexNotice.type" @click="indexNotice = null">
+      {{ indexNotice.text }}
     </div>
   </div>
 </template>
@@ -417,6 +467,16 @@ defineExpose({ refreshTree, openDir })
   color: #fff;
 }
 
+.context-menu-item.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.context-menu-item.disabled:hover {
+  background: transparent;
+  color: var(--text-primary);
+}
+
 .context-menu-item.danger:hover {
   background: #e74c3c;
   color: #fff;
@@ -485,5 +545,31 @@ defineExpose({ refreshTree, openDir })
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+/* 索引提示 */
+.index-notice {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  z-index: 50;
+  word-break: break-all;
+}
+
+.index-notice.ok {
+  background: rgba(40, 167, 69, 0.15);
+  color: #28a745;
+  border: 1px solid rgba(40, 167, 69, 0.4);
+}
+
+.index-notice.err {
+  background: rgba(220, 53, 69, 0.15);
+  color: #dc3545;
+  border: 1px solid rgba(220, 53, 69, 0.4);
 }
 </style>

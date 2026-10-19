@@ -2,6 +2,7 @@
 const electron = require("electron");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 let s3Module = null;
 function getS3Module() {
   if (!s3Module) {
@@ -130,6 +131,571 @@ function registerS3Handlers() {
         const errMsg = e.message || e.toString && e.toString() || "未知错误";
         throw new Error(errMsg);
       }
+    }
+  );
+}
+const INDEX_NAME = "md_docs";
+const DEFAULT_USER = "admin";
+const DEFAULT_PASS = "laoflchdb";
+const DEFAULT_SEARCH_LIMIT = 20;
+function buildFields(f) {
+  return {
+    doc_id: f.docId,
+    title: f.title,
+    content: f.content,
+    path: f.path,
+    kind: f.kind,
+    host: f.host,
+    server: f.server,
+    bucket: f.bucket,
+    key: f.key,
+    updated_at: f.updatedAt
+  };
+}
+function pbVarint(value) {
+  const bytes = [];
+  let v = value;
+  while (v >= 128) {
+    bytes.push(v & 127 | 128);
+    v = Math.floor(v / 128);
+  }
+  bytes.push(v);
+  return Buffer.from(bytes);
+}
+function pbTag(fieldNum, wireType) {
+  return pbVarint(fieldNum << 3 | wireType);
+}
+function pbLenField(fieldNum, payload) {
+  return Buffer.concat([pbTag(fieldNum, 2), pbVarint(payload.length), payload]);
+}
+function pbStrField(fieldNum, s) {
+  return pbLenField(fieldNum, Buffer.from(s, "utf8"));
+}
+function pbVarintField(fieldNum, value) {
+  return Buffer.concat([pbTag(fieldNum, 0), pbVarint(value)]);
+}
+function pbMapEntries(fieldNum, obj) {
+  return Object.entries(obj).map(([k, v]) => {
+    const inner = Buffer.concat([pbStrField(1, k), pbStrField(2, v)]);
+    return pbLenField(fieldNum, inner);
+  });
+}
+function pbReadVarint(buf, offset) {
+  let result = 0n;
+  let shift = 0n;
+  let i = offset;
+  while (i < buf.length) {
+    const byte = buf[i];
+    result |= BigInt(byte & 127) << shift;
+    if ((byte & 128) === 0) return { value: result, offset: i + 1 };
+    shift += 7n;
+    i++;
+  }
+  throw new Error("protobuf: invalid varint");
+}
+function pbParse(buf) {
+  const fields = [];
+  let offset = 0;
+  while (offset < buf.length) {
+    const r = pbReadVarint(buf, offset);
+    const tagVal = r.value;
+    offset = r.offset;
+    const fieldNum = Number(tagVal >> 3n);
+    const wireType = Number(tagVal & 7n);
+    if (wireType === 0) {
+      const vr = pbReadVarint(buf, offset);
+      fields.push({ fieldNum, wireType, value: vr.value });
+      offset = vr.offset;
+    } else if (wireType === 1) {
+      fields.push({ fieldNum, wireType, value: buf.readBigUInt64LE(offset) });
+      offset += 8;
+    } else if (wireType === 2) {
+      const lr = pbReadVarint(buf, offset);
+      const len = Number(lr.value);
+      offset = lr.offset;
+      fields.push({ fieldNum, wireType, value: buf.subarray(offset, offset + len) });
+      offset += len;
+    } else if (wireType === 5) {
+      fields.push({ fieldNum, wireType, value: buf.readFloatLE(offset) });
+      offset += 4;
+    } else {
+      throw new Error("protobuf: unsupported wire type " + wireType);
+    }
+  }
+  return fields;
+}
+function pbAsStr(v) {
+  return v.toString("utf8");
+}
+function pbAsBool(v) {
+  return v !== 0n;
+}
+function pbDecodeMap(buf) {
+  const out = {};
+  let key = null;
+  for (const f of pbParse(buf)) {
+    if (f.fieldNum === 1) key = pbAsStr(f.value);
+    else if (f.fieldNum === 2 && key) {
+      out[key] = pbAsStr(f.value);
+      key = null;
+    }
+  }
+  return out;
+}
+function encodeLoginRequest(username, password) {
+  return Buffer.concat([pbStrField(1, username), pbStrField(2, password)]);
+}
+function decodeLoginResponse(buf) {
+  const out = { success: false, message: "", token: "" };
+  for (const f of pbParse(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool(f.value);
+    else if (f.fieldNum === 2) out.message = pbAsStr(f.value);
+    else if (f.fieldNum === 3) out.token = pbAsStr(f.value);
+  }
+  return out;
+}
+function decodeListIndicesResponse(buf) {
+  const out = { success: false, indexNames: [], message: "" };
+  for (const f of pbParse(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool(f.value);
+    else if (f.fieldNum === 2) out.indexNames.push(pbAsStr(f.value));
+    else if (f.fieldNum === 3) out.message = pbAsStr(f.value);
+  }
+  return out;
+}
+function encodeCreateIndexRequest(indexName, fields) {
+  const fieldParts = fields.map((f) => {
+    const inner = Buffer.concat([
+      pbStrField(1, f.name),
+      pbVarintField(2, f.fieldType),
+      f.comment ? pbStrField(3, f.comment) : Buffer.alloc(0)
+    ]);
+    return pbLenField(2, inner);
+  });
+  return Buffer.concat([pbStrField(1, indexName), ...fieldParts]);
+}
+function decodeCreateIndexResponse(buf) {
+  const out = { success: false, indexId: 0n, message: "" };
+  for (const f of pbParse(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool(f.value);
+    else if (f.fieldNum === 2) out.indexId = f.value;
+    else if (f.fieldNum === 3) out.message = pbAsStr(f.value);
+  }
+  return out;
+}
+function encodeAddDocumentRequest(indexName, docId, fields) {
+  return Buffer.concat([
+    pbStrField(1, indexName),
+    docId ? pbStrField(2, docId) : Buffer.alloc(0),
+    ...pbMapEntries(3, fields)
+  ]);
+}
+function decodeAddDocumentResponse(buf) {
+  const out = { success: false, docId: "", message: "" };
+  for (const f of pbParse(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool(f.value);
+    else if (f.fieldNum === 2) out.docId = pbAsStr(f.value);
+    else if (f.fieldNum === 3) out.message = pbAsStr(f.value);
+  }
+  return out;
+}
+function encodeSearchIndexRequest(indexName, query, limit) {
+  return Buffer.concat([
+    pbStrField(1, indexName),
+    pbStrField(2, query),
+    pbVarintField(3, limit)
+  ]);
+}
+function decodeSearchIndexResponse(buf) {
+  const out = { success: false, results: [], message: "" };
+  for (const f of pbParse(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool(f.value);
+    else if (f.fieldNum === 2) {
+      const item = { docId: "", score: 0, fields: {} };
+      for (const it of pbParse(f.value)) {
+        if (it.fieldNum === 1) item.docId = pbAsStr(it.value);
+        else if (it.fieldNum === 2) item.score = it.value;
+        else if (it.fieldNum === 3) item.fields = pbDecodeMap(it.value);
+      }
+      out.results.push(item);
+    } else if (f.fieldNum === 3) out.message = pbAsStr(f.value);
+  }
+  return out;
+}
+let grpcModule = null;
+function getGrpc() {
+  if (!grpcModule) {
+    grpcModule = require("@grpc/grpc-js");
+  }
+  return grpcModule;
+}
+function makeGrpcServiceDefinition() {
+  const def = (methodName, serialize, deserialize) => ({
+    path: `/laoflchdb.rpc.LaoflchDb/${methodName}`,
+    requestStream: false,
+    responseStream: false,
+    requestSerialize: (msg) => Buffer.from(serialize(msg)),
+    requestDeserialize: (buf) => buf,
+    responseSerialize: (msg) => Buffer.from(msg),
+    responseDeserialize: (buf) => deserialize(Buffer.from(buf))
+  });
+  return {
+    login: def("Login", (m) => encodeLoginRequest(m.username, m.password), decodeLoginResponse),
+    createIndex: def("CreateIndex", encodeCreateIndexRequest, decodeCreateIndexResponse),
+    listIndices: def("ListIndices", () => Buffer.alloc(0), decodeListIndicesResponse),
+    addDocument: def("AddDocument", encodeAddDocumentRequest, decodeAddDocumentResponse),
+    searchIndex: def("SearchIndex", encodeSearchIndexRequest, decodeSearchIndexResponse)
+  };
+}
+class GrpcClient {
+  constructor(host, port) {
+    this.token = null;
+    this.client = null;
+    this.address = host.replace(/^https?:\/\//i, "") + ":" + port;
+  }
+  ensureClient() {
+    if (!this.client) {
+      const grpc = getGrpc();
+      const Client = grpc.makeClientConstructor(makeGrpcServiceDefinition(), "LaoflchDb");
+      this.client = new Client(this.address, grpc.credentials.createInsecure());
+    }
+    return this.client;
+  }
+  unary(method, req) {
+    const grpc = getGrpc();
+    const client = this.ensureClient();
+    return new Promise((resolve, reject) => {
+      const md = new grpc.Metadata();
+      if (this.token) md.set("authorization", "Bearer " + this.token);
+      client[method](req, md, (err, res) => {
+        if (err) reject(err);
+        else resolve(res);
+      });
+    });
+  }
+  async login() {
+    const resp = await this.unary("login", { username: DEFAULT_USER, password: DEFAULT_PASS });
+    if (!resp.success || !resp.token) throw new Error(resp.message || "登录失败");
+    this.token = resp.token;
+  }
+  async withAuth(fn) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (e && e.code === 16) {
+        await this.login();
+        return await fn();
+      }
+      throw e;
+    }
+  }
+  async listIndices() {
+    return this.withAuth(async () => {
+      const resp = await this.unary("listIndices", {});
+      if (!resp.success) throw new Error(resp.message || "列出索引失败");
+      return resp.indexNames;
+    });
+  }
+  async createIndex(indexName, fields) {
+    await this.withAuth(async () => {
+      const resp = await this.unary("createIndex", { indexName, fields });
+      if (!resp.success) throw new Error(resp.message || "创建索引失败");
+    });
+  }
+  async addDocument(indexName, docId, fields) {
+    return this.withAuth(async () => {
+      const resp = await this.unary("addDocument", { indexName, docId, fields });
+      if (!resp.success) throw new Error(resp.message || "添加文档失败");
+      return resp.docId;
+    });
+  }
+  async search(indexName, query, limit) {
+    return this.withAuth(async () => {
+      const resp = await this.unary("searchIndex", { indexName, query, limit });
+      if (!resp.success) throw new Error(resp.message || "搜索失败");
+      return resp.results;
+    });
+  }
+}
+class RestClient {
+  constructor(host, port) {
+    this.token = null;
+    let h = host.trim();
+    if (h && !/^https?:\/\//i.test(h)) h = "http://" + h;
+    this.base = `${h}:${port}`;
+  }
+  async request(path2, opts = {}) {
+    const headers = { "Content-Type": "application/json" };
+    if (this.token) headers["Authorization"] = "Bearer " + this.token;
+    let res;
+    try {
+      res = await fetch(this.base + path2, {
+        method: opts.method || "GET",
+        headers,
+        body: opts.body ? JSON.stringify(opts.body) : void 0
+      });
+    } catch (e) {
+      throw new Error(`连接服务失败: ${e.message || e}`);
+    }
+    let json;
+    try {
+      json = await res.json();
+    } catch {
+      throw new Error(`服务响应异常 (HTTP ${res.status})`);
+    }
+    if (json.success !== true) {
+      throw new Error(json.message || `请求失败 (HTTP ${res.status})`);
+    }
+    return json.data;
+  }
+  async login() {
+    const data = await this.request("/api/v1/login", {
+      method: "POST",
+      body: { username: DEFAULT_USER, password: DEFAULT_PASS }
+    });
+    if (!data || !data.token) throw new Error("登录失败：未获取到 token");
+    this.token = data.token;
+  }
+  async withAuth(fn) {
+    try {
+      return await fn();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/unauthor|token|登录/i.test(msg)) {
+        await this.login();
+        return await fn();
+      }
+      throw e;
+    }
+  }
+  async listIndices() {
+    return this.withAuth(async () => {
+      const data = await this.request("/api/v1/index/indices");
+      return data?.indices || [];
+    });
+  }
+  async createIndex(indexName, fields) {
+    await this.withAuth(async () => {
+      await this.request("/api/v1/index/indices", {
+        method: "POST",
+        body: {
+          index_name: indexName,
+          fields: fields.map((f) => ({
+            name: f.name,
+            field_type: "STRING",
+            comment: f.comment || void 0
+          }))
+        }
+      });
+    });
+  }
+  async addDocument(indexName, docId, fields) {
+    return this.withAuth(async () => {
+      const data = await this.request(`/api/v1/index/indices/${indexName}/docs`, {
+        method: "POST",
+        body: {
+          doc_id: docId || null,
+          fields
+        }
+      });
+      return data?.doc_id || docId || "";
+    });
+  }
+  async search(indexName, query, limit) {
+    return this.withAuth(async () => {
+      const data = await this.request(
+        `/api/v1/index/indices/${indexName}/search?q=${encodeURIComponent(query)}&limit=${limit}`
+      );
+      return data?.results || [];
+    });
+  }
+}
+const clientCache = /* @__PURE__ */ new Map();
+function getClient(protocol, host, port) {
+  const key = `${protocol}|${host}|${port}`;
+  let client = clientCache.get(key);
+  if (!client) {
+    client = protocol === "grpc" ? new GrpcClient(host, port) : new RestClient(host, port);
+    clientCache.set(key, client);
+  }
+  return client;
+}
+function localDocId(filePath) {
+  return os.hostname() + filePath;
+}
+function s3DocId(config, bucket, key) {
+  let endpoint = (config.endpoint || "s3.amazonaws.com").replace(/\/+$/, "");
+  if (!/^https?:\/\//i.test(endpoint)) endpoint = "http://" + endpoint;
+  return `${endpoint}/${bucket}/${key}`;
+}
+async function ensureIndex(protocol, host, port) {
+  try {
+    const client = getClient(protocol, host, port);
+    const indices = await client.listIndices();
+    if (indices.includes(INDEX_NAME)) {
+      return { ok: true, message: `索引 ${INDEX_NAME} 已存在`, created: false };
+    }
+    await client.createIndex(INDEX_NAME, INDEX_FIELDS);
+    return { ok: true, message: `已创建索引 ${INDEX_NAME}`, created: true };
+  } catch (e) {
+    return { ok: false, message: e.message || "检查索引失败", created: false };
+  }
+}
+const INDEX_FIELDS = [
+  { name: "doc_id", fieldType: 0, comment: "自定义文档 ID（主机名+绝对路径 / 服务器地址+保存绝对地址）" },
+  { name: "title", fieldType: 0, comment: "标题（文件名）" },
+  { name: "content", fieldType: 0, comment: "正文全文" },
+  { name: "path", fieldType: 0, comment: "本地绝对路径 / S3 key" },
+  { name: "kind", fieldType: 0, comment: "来源类型：local / s3" },
+  { name: "host", fieldType: 0, comment: "主机名 / S3 服务器地址" },
+  { name: "server", fieldType: 0, comment: "S3 服务器地址（本地为空）" },
+  { name: "bucket", fieldType: 0, comment: "S3 桶（本地为空）" },
+  { name: "key", fieldType: 0, comment: "S3 key（本地为空）" },
+  { name: "updated_at", fieldType: 0, comment: "修改时间（ISO）" }
+];
+function collectMarkdownFiles(dirPath) {
+  const results = [];
+  const walk = (d) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(d);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.startsWith(".")) continue;
+      const full = path.join(d, entry);
+      try {
+        const st = fs.statSync(full);
+        if (st.isDirectory()) {
+          walk(full);
+        } else if (/\.(md|markdown|mdown)$/i.test(entry)) {
+          results.push(full);
+        }
+      } catch {
+      }
+    }
+  };
+  walk(dirPath);
+  return results;
+}
+async function indexLocalFile(protocol, host, port, filePath) {
+  try {
+    const content = fs.readFileSync(filePath, "utf8");
+    let mtime = (/* @__PURE__ */ new Date()).toISOString();
+    try {
+      mtime = fs.statSync(filePath).mtime.toISOString();
+    } catch {
+    }
+    const fields = buildFields({
+      docId: localDocId(filePath),
+      title: path.basename(filePath, path.extname(filePath)) || path.basename(filePath),
+      content,
+      path: filePath,
+      kind: "local",
+      host: os.hostname(),
+      server: "",
+      bucket: "",
+      key: "",
+      updatedAt: mtime
+    });
+    const client = getClient(protocol, host, port);
+    const docId = await client.addDocument(INDEX_NAME, "", fields);
+    return { ok: true, message: `已生成索引：${path.basename(filePath)}`, docId };
+  } catch (e) {
+    return { ok: false, message: `索引 ${path.basename(filePath)} 失败：${e.message || e}`, docId: void 0 };
+  }
+}
+async function indexDir(protocol, host, port, dirPath) {
+  const files = collectMarkdownFiles(dirPath);
+  let okCount = 0;
+  let firstErr = null;
+  for (const filePath of files) {
+    const res = await indexLocalFile(protocol, host, port, filePath);
+    if (res.ok) okCount++;
+    else if (!firstErr) firstErr = res.message;
+  }
+  if (firstErr) {
+    return { ok: false, message: `完成 ${okCount}/${files.length}，出错：${firstErr}`, count: okCount };
+  }
+  return { ok: true, message: `已为 ${okCount} 个 Markdown 文件生成索引`, count: okCount };
+}
+async function fetchS3Content(config, bucket, key) {
+  let s3Mod = null;
+  if (!s3Mod) s3Mod = require("@aws-sdk/client-s3");
+  const { S3Client, GetObjectCommand } = s3Mod;
+  let endpoint = config.endpoint || void 0;
+  if (endpoint && !endpoint.startsWith("http")) endpoint = "http://" + endpoint;
+  const client = new S3Client({
+    endpoint,
+    region: config.region || "us-east-1",
+    forcePathStyle: true,
+    credentials: {
+      accessKeyId: config.accessKeyId,
+      secretAccessKey: config.secretAccessKey
+    }
+  });
+  const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+  const chunks = [];
+  for await (const chunk of res.Body) {
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+async function indexS3File(protocol, host, port, config, bucket, key) {
+  try {
+    const content = await fetchS3Content(config, bucket, key);
+    const fields = buildFields({
+      docId: s3DocId(config, bucket, key),
+      title: path.basename(key, path.extname(key)) || path.basename(key),
+      content,
+      path: key,
+      kind: "s3",
+      host: (config.endpoint || "s3.amazonaws.com").replace(/\/+$/, ""),
+      server: (config.endpoint || "s3.amazonaws.com").replace(/\/+$/, ""),
+      bucket,
+      key,
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    const client = getClient(protocol, host, port);
+    const docId = await client.addDocument(INDEX_NAME, "", fields);
+    return { ok: true, message: `已生成索引：${path.basename(key)}`, docId };
+  } catch (e) {
+    return { ok: false, message: `索引 ${path.basename(key)} 失败：${e.message || e}`, docId: void 0 };
+  }
+}
+function registerIndexSearchHandlers() {
+  electron.ipcMain.handle("index:ensure", async (_e, protocol, host, port) => {
+    return ensureIndex(protocol, host, port);
+  });
+  electron.ipcMain.handle(
+    "index:search",
+    async (_e, protocol, host, port, query, limit) => {
+      try {
+        const client = getClient(protocol, host, port);
+        const results = await client.search(INDEX_NAME, query, limit || DEFAULT_SEARCH_LIMIT);
+        return { ok: true, message: "", results };
+      } catch (e) {
+        return { ok: false, message: e.message || "搜索失败", results: [] };
+      }
+    }
+  );
+  electron.ipcMain.handle(
+    "index:indexLocal",
+    async (_e, protocol, host, port, filePath) => {
+      return indexLocalFile(protocol, host, port, filePath);
+    }
+  );
+  electron.ipcMain.handle(
+    "index:indexDir",
+    async (_e, protocol, host, port, dirPath) => {
+      return indexDir(protocol, host, port, dirPath);
+    }
+  );
+  electron.ipcMain.handle(
+    "index:indexS3",
+    async (_e, protocol, host, port, config, bucket, key) => {
+      return indexS3File(protocol, host, port, config, bucket, key);
     }
   );
 }
@@ -778,6 +1344,7 @@ electron.app.whenReady().then(() => {
     updateSplashProgress(30, "加载编辑器组件...");
     createWindow();
     registerS3Handlers();
+    registerIndexSearchHandlers();
     updateSplashProgress(65, "初始化服务...");
   }, 200);
   electron.app.on("activate", () => {
