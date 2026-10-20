@@ -111,7 +111,7 @@ function cancel() {
             <input
               v-model="draftGrpcPort"
               class="settings-input port"
-              placeholder="19777"
+              placeholder="29777"
               inputmode="numeric"
             />
           </div>
@@ -129,7 +129,7 @@ function cancel() {
             <input
               v-model="draftRestPort"
               class="settings-input port"
-              placeholder="8080"
+              placeholder="38080"
               inputmode="numeric"
             />
           </div>

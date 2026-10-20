@@ -263,8 +263,9 @@ function decodeListIndicesResponse(buf) {
   }
   return out;
 }
-function encodeCreateIndexRequest(indexName, fields) {
-  const fieldParts = fields.map((f) => {
+function encodeCreateIndexRequest(msg) {
+  const { indexName, fields } = msg;
+  const fieldParts = (fields || []).map((f) => {
     const inner = Buffer.concat([
       pbStrField(1, f.name),
       pbVarintField(2, f.fieldType),
@@ -275,19 +276,20 @@ function encodeCreateIndexRequest(indexName, fields) {
   return Buffer.concat([pbStrField(1, indexName), ...fieldParts]);
 }
 function decodeCreateIndexResponse(buf) {
-  const out = { success: false, indexId: 0n, message: "" };
+  const out = { success: false, indexId: 0, message: "" };
   for (const f of pbParse(buf)) {
     if (f.fieldNum === 1) out.success = pbAsBool(f.value);
-    else if (f.fieldNum === 2) out.indexId = f.value;
+    else if (f.fieldNum === 2) out.indexId = Number(f.value);
     else if (f.fieldNum === 3) out.message = pbAsStr(f.value);
   }
   return out;
 }
-function encodeAddDocumentRequest(indexName, docId, fields) {
+function encodeAddDocumentRequest(msg) {
+  const { indexName, docId, fields } = msg;
   return Buffer.concat([
     pbStrField(1, indexName),
     docId ? pbStrField(2, docId) : Buffer.alloc(0),
-    ...pbMapEntries(3, fields)
+    ...pbMapEntries(3, fields || {})
   ]);
 }
 function decodeAddDocumentResponse(buf) {
@@ -299,11 +301,12 @@ function decodeAddDocumentResponse(buf) {
   }
   return out;
 }
-function encodeSearchIndexRequest(indexName, query, limit) {
+function encodeSearchIndexRequest(msg) {
+  const { indexName, query, limit } = msg;
   return Buffer.concat([
     pbStrField(1, indexName),
-    pbStrField(2, query),
-    pbVarintField(3, limit)
+    pbStrField(2, query || ""),
+    pbVarintField(3, limit || DEFAULT_SEARCH_LIMIT)
   ]);
 }
 function decodeSearchIndexResponse(buf) {
@@ -315,7 +318,7 @@ function decodeSearchIndexResponse(buf) {
       for (const it of pbParse(f.value)) {
         if (it.fieldNum === 1) item.docId = pbAsStr(it.value);
         else if (it.fieldNum === 2) item.score = it.value;
-        else if (it.fieldNum === 3) item.fields = pbDecodeMap(it.value);
+        else if (it.fieldNum === 3) Object.assign(item.fields, pbDecodeMap(it.value));
       }
       out.results.push(item);
     } else if (f.fieldNum === 3) out.message = pbAsStr(f.value);
@@ -382,7 +385,9 @@ class GrpcClient {
     try {
       return await fn();
     } catch (e) {
-      if (e && e.code === 16) {
+      const msg = e?.details || (e instanceof Error ? e.message : "");
+      const authFailed = e?.code === 16 || /unauthor|未提供有效的认证|authentication required|invalid or missing token/i.test(msg);
+      if (authFailed) {
         await this.login();
         return await fn();
       }

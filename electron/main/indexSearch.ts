@@ -202,11 +202,12 @@ function decodeListIndicesResponse(buf: Buffer): ListIndicesResponse {
   return out
 }
 
-function encodeCreateIndexRequest(
-  indexName: string,
+function encodeCreateIndexRequest(msg: {
+  indexName: string
   fields: Array<{ name: string; fieldType: number; comment?: string }>
-): Buffer {
-  const fieldParts = fields.map((f) => {
+}): Buffer {
+  const { indexName, fields } = msg
+  const fieldParts = (fields || []).map((f) => {
     const inner = Buffer.concat([
       pbStrField(1, f.name),
       pbVarintField(2, f.fieldType),
@@ -219,29 +220,30 @@ function encodeCreateIndexRequest(
 
 interface CreateIndexResponse {
   success: boolean
-  indexId: bigint
+  indexId: number
   message: string
 }
 
 function decodeCreateIndexResponse(buf: Buffer): CreateIndexResponse {
-  const out: CreateIndexResponse = { success: false, indexId: 0n, message: '' }
+  const out: CreateIndexResponse = { success: false, indexId: 0, message: '' }
   for (const f of pbParse(buf)) {
     if (f.fieldNum === 1) out.success = pbAsBool(f.value)
-    else if (f.fieldNum === 2) out.indexId = f.value as bigint
+    else if (f.fieldNum === 2) out.indexId = Number(f.value)
     else if (f.fieldNum === 3) out.message = pbAsStr(f.value)
   }
   return out
 }
 
-function encodeAddDocumentRequest(
-  indexName: string,
-  docId: string,
+function encodeAddDocumentRequest(msg: {
+  indexName: string
+  docId: string
   fields: Record<string, string>
-): Buffer {
+}): Buffer {
+  const { indexName, docId, fields } = msg
   return Buffer.concat([
     pbStrField(1, indexName),
     docId ? pbStrField(2, docId) : Buffer.alloc(0),
-    ...pbMapEntries(3, fields)
+    ...pbMapEntries(3, fields || {})
   ])
 }
 
@@ -261,11 +263,12 @@ function decodeAddDocumentResponse(buf: Buffer): AddDocumentResponse {
   return out
 }
 
-function encodeSearchIndexRequest(indexName: string, query: string, limit: number): Buffer {
+function encodeSearchIndexRequest(msg: { indexName: string; query: string; limit: number }): Buffer {
+  const { indexName, query, limit } = msg
   return Buffer.concat([
     pbStrField(1, indexName),
-    pbStrField(2, query),
-    pbVarintField(3, limit)
+    pbStrField(2, query || ''),
+    pbVarintField(3, limit || DEFAULT_SEARCH_LIMIT)
   ])
 }
 
@@ -284,7 +287,7 @@ function decodeSearchIndexResponse(buf: Buffer): SearchIndexResponse {
       for (const it of pbParse(f.value as Buffer)) {
         if (it.fieldNum === 1) item.docId = pbAsStr(it.value)
         else if (it.fieldNum === 2) item.score = it.value as number
-        else if (it.fieldNum === 3) item.fields = pbDecodeMap(it.value as Buffer)
+        else if (it.fieldNum === 3) Object.assign(item.fields, pbDecodeMap(it.value as Buffer))
       }
       out.results.push(item)
     } else if (f.fieldNum === 3) out.message = pbAsStr(f.value)
@@ -363,8 +366,14 @@ class GrpcClient {
     try {
       return await fn()
     } catch (e: any) {
-      // gRPC code 16 = UNAUTHENTICATED：重新登录后重试一次
-      if (e && e.code === 16) {
+      // 认证失败时重新登录后重试一次：
+      // - gRPC 状态码 16（UNAUTHENTICATED）
+      // - 部分服务端把认证失败放进响应体（success=false + 认证相关 message）
+      const msg = e?.details || (e instanceof Error ? e.message : '')
+      const authFailed =
+        e?.code === 16 ||
+        /unauthor|未提供有效的认证|authentication required|invalid or missing token/i.test(msg)
+      if (authFailed) {
         await this.login()
         return await fn()
       }

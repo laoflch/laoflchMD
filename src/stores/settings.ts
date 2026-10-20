@@ -7,9 +7,9 @@ const SETTINGS_KEY = 'laoflchmd.settings.v1'
 
 // laoflchdb-rust 索引服务默认配置（见 laoflchdb.yaml access_protocols）
 export const DEFAULT_GRPC_HOST = '127.0.0.1'
-export const DEFAULT_GRPC_PORT = '19777'
+export const DEFAULT_GRPC_PORT = '29777'
 export const DEFAULT_REST_HOST = '127.0.0.1'
-export const DEFAULT_REST_PORT = '8080'
+export const DEFAULT_REST_PORT = '38080'
 
 interface PersistedSettings {
   indexProtocol: IndexProtocol
