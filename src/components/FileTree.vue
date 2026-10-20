@@ -51,6 +51,7 @@ async function openDir(dirPath: string) {
   loading.value = false
   // Save to localStorage for persistence across restarts
   localStorage.setItem('lastOpenedDir', dirPath)
+  checkIndexed(treeData.value)
 }
 
 async function openDirectory() {
@@ -199,15 +200,56 @@ async function handleIndex() {
     if (isDir) {
       const res = await window.api.indexDir(protocol, host, port, targetPath)
       showIndexNotice(res.ok ? 'ok' : 'err', res.message)
+      if (res.ok) checkIndexed(treeData.value)
     } else {
       const res = await window.api.indexLocalFile(protocol, host, port, targetPath)
       showIndexNotice(res.ok ? 'ok' : 'err', res.message)
+      if (res.ok) {
+        const next = new Set(indexedPaths.value)
+        next.add(targetPath)
+        indexedPaths.value = next
+      }
     }
   } catch (e: unknown) {
     showIndexNotice('err', e instanceof Error ? e.message : '生成索引失败')
   } finally {
     indexing.value = false
   }
+}
+
+// 全文检索：异步查询目录下所有 md 文件是否已索引（按 BLAKE3 摘要精确匹配）
+const indexedPaths = ref<Set<string>>(new Set())
+let checkSeq = 0
+
+async function checkIndexed(files: FileEntry[]) {
+  const mdFiles = files.filter((f) => f.isMarkdown && !f.isDirectory)
+  if (mdFiles.length === 0) return
+  const seq = ++checkSeq
+  try {
+    const protocol = settings.indexProtocol
+    const host = protocol === 'grpc' ? settings.grpcHost : settings.restHost
+    const port = protocol === 'grpc' ? settings.grpcPort : settings.restPort
+    const res = await window.api.indexCheckFiles(
+      protocol,
+      host,
+      port,
+      mdFiles.map((f) => f.path)
+    )
+    if (seq !== checkSeq) return // 丢弃过期结果
+    if (!res.ok) return
+    const next = new Set(indexedPaths.value)
+    for (const [p, indexed] of Object.entries(res.results)) {
+      if (indexed) next.add(p)
+      else next.delete(p)
+    }
+    indexedPaths.value = next
+  } catch {
+    // 服务不可达等静默忽略，标签不显示
+  }
+}
+
+function handleChildrenLoaded(entries: FileEntry[]) {
+  checkIndexed(entries)
 }
 
 // Click outside context menu to close it
@@ -305,10 +347,12 @@ defineExpose({ refreshTree, openDir })
         :expanded="expanded"
         :selected-path="selectedPath"
         :renaming-path="renamingPath"
+        :indexed="indexedPaths.has(entry.path)"
         :depth="0"
         @select="selectNode"
         @contextmenu="showContextMenu"
         @rename-complete="handleRenameComplete"
+        @children-loaded="handleChildrenLoaded"
       />
     </div>
 

@@ -112,5 +112,9 @@ contextBridge.exposeInMainWorld('api', {
     config: any,
     bucket: string,
     key: string
-  ) => ipcRenderer.invoke('index:indexS3', protocol, host, port, config, bucket, key)
+  ) => ipcRenderer.invoke('index:indexS3', protocol, host, port, config, bucket, key),
+  indexCheckFiles: (protocol: 'grpc' | 'rest', host: string, port: string, paths: string[]) =>
+    ipcRenderer.invoke('index:checkFiles', protocol, host, port, paths),
+  indexDeleteDoc: (protocol: 'grpc' | 'rest', host: string, port: string, docId: string, fields?: Record<string, string>) =>
+    ipcRenderer.invoke('index:deleteDoc', protocol, host, port, docId, fields)
 })

@@ -187,6 +187,7 @@ watch(() => store.fileName, (name) => {
   --scrollbar-track: transparent;
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
   --preview-max-width: 860px;
+  --footer-bar-height: 38px;
 }
 
 .dark-theme {

@@ -288,6 +288,117 @@ function syncPreviewToEditor() {
     textarea.scrollTop = ratio * (textarea.scrollHeight - textarea.clientHeight)
   }
 }
+
+// ——— 字符统计 ———
+// 有效字符：按 Unicode 码点计数（emoji 记 1 个），排除空白字符（空格/制表/换行等）
+function countValidChars(text: string): number {
+  let n = 0
+  for (const ch of text) {
+    if (/\s/.test(ch)) continue
+    n++
+  }
+  return n
+}
+
+// 源文本（编辑页/实时预览）有效字符数
+const sourceCharCount = computed(() => countValidChars(store.content))
+
+// 预览页：从渲染后的 HTML 提取纯文本，统计可见文本的有效字符数
+const previewCharCount = computed(() => {
+  const html = store.renderedHtml || ''
+  if (!html) return 0
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  return countValidChars(doc.body?.textContent || '')
+})
+
+// ——— 视图切换：光标/滚动位置大体保持一致 ———
+interface ViewPos {
+  mode: 'edit' | 'preview'
+  sel: number
+  scroll: number
+  ratio: number
+  hasCaret: boolean
+}
+let viewPos: ViewPos = { mode: 'edit', sel: 0, scroll: 0, ratio: 0, hasCaret: false }
+
+// 源文本按行比例估算滚动比例
+function lineRatioOfOffset(content: string, offset: number): number {
+  if (!content) return 0
+  const line = content.slice(0, Math.min(offset, content.length)).split('\n').length - 1
+  const total = content.split('\n').length
+  return total > 1 ? line / (total - 1) : 0
+}
+
+watch(
+  () => store.viewMode,
+  async (mode, oldMode) => {
+    // 离开编辑类视图：保存光标偏移/滚动位置/是否有光标焦点
+    if ((oldMode === 'edit' || oldMode === 'live') && textareaRef.value) {
+      const ta = textareaRef.value
+      const max = ta.scrollHeight - ta.clientHeight
+      viewPos = {
+        mode: 'edit',
+        sel: ta.selectionStart,
+        scroll: ta.scrollTop,
+        ratio: max > 0 ? ta.scrollTop / max : 0,
+        hasCaret: document.activeElement === ta
+      }
+    }
+    // 离开预览：优先按光标比例记忆；光标不在预览内容内时，按滚动位置比例
+    if (oldMode === 'preview' && previewScrollRef.value) {
+      const pv = previewScrollRef.value
+      const editable = editableRef.value
+      let ratio = -1
+      const sel = window.getSelection()
+      if (editable && sel && sel.rangeCount > 0 && sel.anchorNode && editable.contains(sel.anchorNode)) {
+        const total = editable.textContent?.length || 0
+        if (total) {
+          const range = sel.getRangeAt(0).cloneRange()
+          range.selectNodeContents(editable)
+          range.setEnd(sel.anchorNode, sel.anchorOffset)
+          ratio = range.toString().length / total
+        }
+      }
+      if (ratio < 0) {
+        const max = pv.scrollHeight - pv.clientHeight
+        ratio = max > 0 ? pv.scrollTop / max : 0
+      }
+      viewPos = { mode: 'preview', sel: 0, scroll: 0, ratio, hasCaret: false }
+    }
+    await nextTick()
+    if (mode === 'edit' || mode === 'live') {
+      const content = store.content
+      const pos =
+        viewPos.mode === 'edit'
+          ? viewPos.sel
+          : Math.min(content.length, Math.max(0, Math.round((viewPos.ratio >= 0 ? viewPos.ratio : 0) * content.length)))
+      // nextTick 后重新获取 textarea（预览模式下旧引用为 null，必须在新 DOM 挂载后取值）
+      const newTa = textareaRef.value
+      if (newTa) {
+        try {
+          newTa.setSelectionRange(pos, pos)
+        } catch {}
+        newTa.focus()
+        newTa.scrollTop =
+          viewPos.mode === 'edit' ? viewPos.scroll : lineRatioOfOffset(content, pos) * (newTa.scrollHeight - newTa.clientHeight)
+      }
+    } else if (mode === 'preview') {
+      const pv = previewScrollRef.value
+      if (pv) {
+        // 编辑侧：有光标焦点按光标行比例；无焦点按滚动位置比例
+        const ratio =
+          viewPos.mode === 'edit'
+            ? viewPos.hasCaret
+              ? lineRatioOfOffset(store.content, viewPos.sel)
+              : viewPos.ratio
+            : viewPos.ratio >= 0
+              ? viewPos.ratio
+              : 0
+        pv.scrollTop = ratio * (pv.scrollHeight - pv.clientHeight)
+      }
+    }
+  }
+)
 </script>
 
 <template>
@@ -349,6 +460,12 @@ function syncPreviewToEditor() {
           spellcheck="true"
         ></textarea>
       </div>
+      <div class="status-bar">
+        <span class="status-left" :class="{ modified: store.isModified }">
+          {{ store.isModified ? '● 未保存' : '✓ 已保存' }}
+        </span>
+        <span class="status-right">{{ sourceCharCount }} 字符</span>
+      </div>
     </div>
 
     <!-- Preview mode: rendered only (editable) -->
@@ -365,40 +482,51 @@ function syncPreviewToEditor() {
           spellcheck="true"
         ></div>
       </div>
-      <div class="preview-status-bar">
+      <div class="status-bar">
         <span class="status-left" :class="{ modified: store.isModified }">
           {{ store.isModified ? '● 未保存' : '✓ 已保存' }}
         </span>
-        <span class="status-right">{{ store.content.length }} 字符</span>
+        <span class="status-right">{{ previewCharCount }} 字符</span>
       </div>
     </div>
 
     <!-- Live mode: split view (Typora-like) -->
     <div v-else class="live-pane">
-      <div class="live-edit" :style="{ width: (splitRatio * 100) + '%' }">
-        <div class="editor-wrap">
-          <div
-            ref="hlLayerRef"
-            class="hl-layer"
-            v-show="isOpen && matches.length > 0"
-            v-html="highlightHtml"
-          ></div>
-          <textarea
-            ref="textareaRef"
-            class="editor-textarea"
-            :class="{ finding: isOpen && matches.length > 0 }"
-            :value="store.content"
-            @input="onTextareaInput"
-            @keydown="onTextareaKeydown"
-            @scroll="onEditorScroll"
-            placeholder="在此输入 Markdown..."
-            spellcheck="true"
-          ></textarea>
+      <div class="live-body">
+        <div class="live-edit" :style="{ width: (splitRatio * 100) + '%' }">
+          <div class="editor-wrap">
+            <div
+              ref="hlLayerRef"
+              class="hl-layer"
+              v-show="isOpen && matches.length > 0"
+              v-html="highlightHtml"
+            ></div>
+            <textarea
+              ref="textareaRef"
+              class="editor-textarea"
+              :class="{ finding: isOpen && matches.length > 0 }"
+              :value="store.content"
+              @input="onTextareaInput"
+              @keydown="onTextareaKeydown"
+              @scroll="onEditorScroll"
+              placeholder="在此输入 Markdown..."
+              spellcheck="true"
+            ></textarea>
+          </div>
+        </div>
+        <div class="live-divider" :class="{ dragging: isDragging }" @mousedown="onDividerMouseDown"></div>
+        <div ref="previewScrollRef" class="live-preview preview-pane" @scroll="syncPreviewToEditor">
+          <div class="preview-content markdown-body" v-html="store.renderedHtml"></div>
         </div>
       </div>
-      <div class="live-divider" :class="{ dragging: isDragging }" @mousedown="onDividerMouseDown"></div>
-      <div ref="previewScrollRef" class="live-preview preview-pane" @scroll="syncPreviewToEditor">
-        <div class="preview-content markdown-body" v-html="store.renderedHtml"></div>
+      <div class="status-bar">
+        <span class="status-left" :class="{ modified: store.isModified }">
+          {{ store.isModified ? '● 未保存' : '✓ 已保存' }}
+        </span>
+        <span class="status-right">
+          <span class="status-count">源 {{ sourceCharCount }} 字符</span>
+          <span class="status-count">预览 {{ previewCharCount }} 字符</span>
+        </span>
       </div>
     </div>
   </div>
@@ -487,7 +615,8 @@ function syncPreviewToEditor() {
 /* Highlight layer (find matches behind transparent textarea text) */
 .editor-wrap {
   position: relative;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
 }
 
 .hl-layer {
@@ -538,6 +667,8 @@ function syncPreviewToEditor() {
 /* Edit pane */
 .edit-pane {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   min-height: 0;
 }
@@ -588,40 +719,58 @@ function syncPreviewToEditor() {
   outline: none;
 }
 
-.preview-status-bar {
+.status-bar {
   flex: none;
-  padding: 6px 20px;
+  height: var(--footer-bar-height);
+  box-sizing: border-box;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 16px;
   font-size: 11px;
   color: var(--text-muted);
   background: var(--bg-secondary);
   border-top: 1px solid var(--border-color);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
   pointer-events: none;
 }
 
-.preview-status-bar .status-left {
+.status-bar .status-left {
   color: var(--text-muted);
 }
 
-.preview-status-bar .status-left.modified {
+.status-bar .status-left.modified {
   color: #f0ad4e;
 }
 
-.preview-status-bar .status-right {
+.status-bar .status-right {
   color: var(--text-muted);
+  display: flex;
+  gap: 14px;
+}
+
+.status-bar .status-count {
+  white-space: nowrap;
 }
 
 /* Live pane (split) */
 .live-pane {
   display: flex;
+  flex-direction: column;
   flex: 1;
+  overflow: hidden;
+}
+
+.live-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 
 .live-edit {
   flex: none;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   border-right: none;
   width: 50%;

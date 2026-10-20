@@ -117,6 +117,52 @@ async function openResult(r: IndexSearchResult) {
   }
 }
 
+// 删除索引文档（右上角关闭按钮）
+const deletingDocId = ref<string | null>(null)
+const confirmTarget = ref<IndexSearchResult | null>(null)
+const notice = ref<string | null>(null)
+let noticeTimer: ReturnType<typeof setTimeout> | null = null
+
+function confirmDelete(r: IndexSearchResult) {
+  if (deletingDocId.value) return
+  confirmTarget.value = r
+}
+
+async function doDelete() {
+  const r = confirmTarget.value
+  if (!r || deletingDocId.value) return
+  confirmTarget.value = null
+  deletingDocId.value = r.docId
+  error.value = null
+  try {
+    const res = await window.api.indexDeleteDoc(
+      settings.indexProtocol,
+      host.value,
+      port.value,
+      r.docId,
+      { ...r.fields } // 展开为普通对象，避免 Vue reactive Proxy 无法通过 IPC 克隆
+    )
+    if (res.ok) {
+      results.value = results.value.filter((item) => item.docId !== r.docId)
+      showNotice(`删除成功：已从索引中移除「${titleOf(r)}」`)
+    } else {
+      error.value = res.message
+    }
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : '删除索引文档失败'
+  } finally {
+    deletingDocId.value = null
+  }
+}
+
+function showNotice(msg: string) {
+  notice.value = msg
+  if (noticeTimer) clearTimeout(noticeTimer)
+  noticeTimer = setTimeout(() => {
+    notice.value = null
+  }, 3000)
+}
+
 onMounted(() => {
   ensureIndex()
 })
@@ -154,6 +200,7 @@ onMounted(() => {
     </div>
 
     <div v-if="indexMessage" class="index-msg">{{ indexMessage }}</div>
+    <div v-if="notice" class="search-notice">{{ notice }}</div>
     <div v-if="error" class="search-error">{{ error }}</div>
     <div v-if="searching" class="search-loading">
       <span class="loading-spinner"></span>
@@ -163,6 +210,17 @@ onMounted(() => {
     <div class="search-results">
       <template v-if="results.length > 0">
         <div v-for="(r, i) in results" :key="i" class="result-item" @click="openResult(r)">
+          <button
+            class="result-close"
+            :class="{ deleting: deletingDocId === r.docId }"
+            :disabled="deletingDocId !== null"
+            :title="'删除该条索引文档'"
+            @click.stop="confirmDelete(r)"
+          >
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M4 4l8 8M12 4l-8 8"/>
+            </svg>
+          </button>
           <div class="result-title">{{ titleOf(r) }}</div>
           <div class="result-snippet">{{ snippetOf(r) }}</div>
           <div class="result-meta">
@@ -174,6 +232,22 @@ onMounted(() => {
       </template>
       <div v-else-if="searched && !searching && !error" class="search-empty">没有匹配的文档</div>
       <div v-else-if="!searched" class="search-empty">输入关键词开始检索</div>
+    </div>
+
+    <!-- 删除确认弹窗 -->
+    <div v-if="confirmTarget" class="del-modal-mask" @click.self="confirmTarget = null">
+      <div class="del-modal">
+        <div class="del-modal-title">删除索引条目</div>
+        <div class="del-modal-body">
+          确定要从索引中删除
+          <strong class="del-modal-name">{{ titleOf(confirmTarget) }}</strong>
+          吗？仅删除索引条目，不会删除原文件。该操作不可恢复。
+        </div>
+        <div class="del-modal-actions">
+          <button class="del-btn cancel" @click="confirmTarget = null">取消</button>
+          <button class="del-btn confirm" @click="doDelete">删除</button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -327,6 +401,90 @@ onMounted(() => {
   word-break: break-all;
 }
 
+.search-notice {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: rgba(103, 194, 58, 0.14);
+  color: #67c23a;
+  border-radius: 4px;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+/* 删除确认弹窗 */
+.del-modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.del-modal {
+  width: 320px;
+  background: var(--bg-card, var(--bg-secondary));
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 16px 18px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
+.del-modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 10px;
+}
+
+.del-modal-body {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.del-modal-name {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.del-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.del-btn {
+  padding: 5px 14px;
+  font-size: 12px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.del-btn:hover {
+  border-color: var(--accent-color);
+  color: var(--accent-color);
+}
+
+.del-btn.confirm {
+  background: #dc3545;
+  border-color: #dc3545;
+  color: #fff;
+}
+
+.del-btn.confirm:hover {
+  background: #c82333;
+  border-color: #c82333;
+  color: #fff;
+}
+
 .search-loading {
   display: flex;
   align-items: center;
@@ -362,6 +520,7 @@ onMounted(() => {
 }
 
 .result-item {
+  position: relative;
   padding: 8px 10px;
   border: 1px solid var(--border-color);
   border-radius: 6px;
@@ -374,6 +533,38 @@ onMounted(() => {
   border-color: var(--accent-color);
 }
 
+/* 右上角关闭按钮（删除索引文档） */
+.result-close {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+}
+
+.result-close:hover:not(:disabled) {
+  background: rgba(220, 53, 69, 0.15);
+  color: #dc3545;
+}
+
+.result-close.deleting {
+  color: #dc3545;
+}
+
+.result-close:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .result-title {
   font-size: 13px;
   font-weight: 600;
@@ -381,6 +572,7 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  padding-right: 18px;
 }
 
 .result-snippet {

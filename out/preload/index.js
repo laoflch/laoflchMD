@@ -84,5 +84,7 @@ electron.contextBridge.exposeInMainWorld("api", {
   indexSearch: (protocol, host, port, query, limit) => electron.ipcRenderer.invoke("index:search", protocol, host, port, query, limit),
   indexLocalFile: (protocol, host, port, filePath) => electron.ipcRenderer.invoke("index:indexLocal", protocol, host, port, filePath),
   indexDir: (protocol, host, port, dirPath) => electron.ipcRenderer.invoke("index:indexDir", protocol, host, port, dirPath),
-  indexS3File: (protocol, host, port, config, bucket, key) => electron.ipcRenderer.invoke("index:indexS3", protocol, host, port, config, bucket, key)
+  indexS3File: (protocol, host, port, config, bucket, key) => electron.ipcRenderer.invoke("index:indexS3", protocol, host, port, config, bucket, key),
+  indexCheckFiles: (protocol, host, port, paths) => electron.ipcRenderer.invoke("index:checkFiles", protocol, host, port, paths),
+  indexDeleteDoc: (protocol, host, port, docId, fields) => electron.ipcRenderer.invoke("index:deleteDoc", protocol, host, port, docId, fields)
 });

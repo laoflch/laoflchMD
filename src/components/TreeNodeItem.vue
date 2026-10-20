@@ -8,12 +8,14 @@ const props = defineProps<{
   selectedPath: string | null
   depth: number
   renamingPath: string | null
+  indexed: boolean
 }>()
 
 const emit = defineEmits<{
   select: [entry: FileEntry]
   contextmenu: [event: MouseEvent, entry: FileEntry]
   renameComplete: [oldPath: string, newPath: string | null]
+  childrenLoaded: [entries: FileEntry[]]
 }>()
 
 const children = ref<FileEntry[]>([])
@@ -35,6 +37,7 @@ async function loadChildren() {
     children.value = []
   }
   childLoading.value = false
+  emit('childrenLoaded', children.value)
 }
 
 function handleClick() {
@@ -76,6 +79,10 @@ function handleChildContextMenu(event: MouseEvent, entry: FileEntry) {
 
 function handleChildRenameComplete(oldPath: string, newPath: string | null) {
   emit('renameComplete', oldPath, newPath)
+}
+
+function handleChildChildrenLoaded(entries: FileEntry[]) {
+  emit('childrenLoaded', entries)
 }
 
 function handleRenameKeydown(e: KeyboardEvent) {
@@ -160,6 +167,7 @@ defineExpose({ startRename })
         autofocus
       />
       <span v-else class="tree-label">{{ entry.name }}</span>
+      <span v-if="indexed && entry.isMarkdown && !entry.isDirectory" class="indexed-tag">已索引</span>
     </div>
 
     <!-- Children (for directories) -->
@@ -176,10 +184,12 @@ defineExpose({ startRename })
         :expanded="expanded"
         :selected-path="selectedPath"
         :renaming-path="renamingPath"
+        :indexed="indexed"
         :depth="depth + 1"
         @select="handleChildSelect"
         @contextmenu="handleChildContextMenu"
         @rename-complete="handleChildRenameComplete"
+        @children-loaded="handleChildChildrenLoaded"
       />
     </div>
   </div>
@@ -242,6 +252,23 @@ defineExpose({ startRename })
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 已索引标签：白字 + 绿色背景 */
+.indexed-tag {
+  flex-shrink: 0;
+  margin-left: 4px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: #fff;
+  background: #67c23a;
+  user-select: none;
+}
+
+.tree-node-row.is-selected .indexed-tag {
+  background: rgba(255, 255, 255, 0.25);
 }
 
 .rename-input {

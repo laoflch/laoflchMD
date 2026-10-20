@@ -85,6 +85,19 @@ declare global {
         bucket: string,
         key: string
       ) => Promise<{ ok: boolean; message: string; docId?: string }>
+      indexCheckFiles: (
+        protocol: IndexProtocol,
+        host: string,
+        port: string,
+        paths: string[]
+      ) => Promise<{ ok: boolean; message: string; results: Record<string, boolean> }>
+      indexDeleteDoc: (
+        protocol: IndexProtocol,
+        host: string,
+        port: string,
+        docId: string,
+        fields?: Record<string, string>
+      ) => Promise<{ ok: boolean; message: string }>
     }
   }
 }

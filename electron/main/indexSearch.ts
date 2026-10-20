@@ -9,12 +9,17 @@ import { readFileSync, readdirSync, statSync } from 'fs'
  * - 统一认证：admin/laoflchdb 登录 → Bearer token，token 失效时自动重新登录并重试
  * - 索引名 md_docs；字段全部 STRING，自定义 doc_id 存在 fields.doc_id 字段中
  *   （tantivy 引擎把 add_document 的 doc_id 参数强制解析为 u64，故无法直接使用字符串 doc_id）
+ * - blake3 字段存文件内容 BLAKE3 摘要（64 位 hex），作为去重标识；
+ *   文件导航打开目录时通过摘要查询「是否已索引」
  */
 
 const INDEX_NAME = 'md_docs'
 const DEFAULT_USER = 'admin'
 const DEFAULT_PASS = 'laoflchdb'
 const DEFAULT_SEARCH_LIMIT = 20
+
+/** 索引 schema 版本：变更字段结构时递增，ensureIndex 会检测并重建旧表 */
+const INDEX_SCHEMA_VERSION = 2
 
 export type IndexProtocol = 'grpc' | 'rest'
 
@@ -36,6 +41,7 @@ export interface IndexFields {
   bucket: string
   key: string
   updatedAt: string
+  blake3: string
 }
 
 function buildFields(f: IndexFields): Record<string, string> {
@@ -49,7 +55,8 @@ function buildFields(f: IndexFields): Record<string, string> {
     server: f.server,
     bucket: f.bucket,
     key: f.key,
-    updated_at: f.updatedAt
+    updated_at: f.updatedAt,
+    blake3: f.blake3
   }
 }
 
@@ -234,6 +241,67 @@ function decodeCreateIndexResponse(buf: Buffer): CreateIndexResponse {
   return out
 }
 
+function encodeDropIndexRequest(indexName: string): Buffer {
+  return pbStrField(1, indexName)
+}
+
+interface DropIndexResponse {
+  success: boolean
+  message: string
+}
+
+function decodeDropIndexResponse(buf: Buffer): DropIndexResponse {
+  const out: DropIndexResponse = { success: false, message: '' }
+  for (const f of pbParse(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool(f.value)
+    else if (f.fieldNum === 2) out.message = pbAsStr(f.value)
+  }
+  return out
+}
+
+function encodeGetIndexFieldsRequest(indexName: string): Buffer {
+  return pbStrField(1, indexName)
+}
+
+interface GetIndexFieldsResponse {
+  success: boolean
+  /** 列名列表（ColumnMeta.column_name） */
+  fieldNames: string[]
+  message: string
+}
+
+function decodeGetIndexFieldsResponse(buf: Buffer): GetIndexFieldsResponse {
+  const out: GetIndexFieldsResponse = { success: false, fieldNames: [], message: '' }
+  for (const f of pbParse(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool(f.value)
+    else if (f.fieldNum === 2) {
+      for (const it of pbParse(f.value as Buffer)) {
+        // ColumnMeta.column_name = 3
+        if (it.fieldNum === 3) out.fieldNames.push(pbAsStr(it.value))
+      }
+    } else if (f.fieldNum === 3) out.message = pbAsStr(f.value)
+  }
+  return out
+}
+
+function encodeDeleteDocumentRequest(indexName: string, docId: string): Buffer {
+  return Buffer.concat([pbStrField(1, indexName), pbStrField(2, docId)])
+}
+
+interface DeleteDocumentResponse {
+  success: boolean
+  message: string
+}
+
+function decodeDeleteDocumentResponse(buf: Buffer): DeleteDocumentResponse {
+  const out: DeleteDocumentResponse = { success: false, message: '' }
+  for (const f of pbParse(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool(f.value)
+    else if (f.fieldNum === 2) out.message = pbAsStr(f.value)
+  }
+  return out
+}
+
 function encodeAddDocumentRequest(msg: {
   indexName: string
   docId: string
@@ -263,12 +331,18 @@ function decodeAddDocumentResponse(buf: Buffer): AddDocumentResponse {
   return out
 }
 
-function encodeSearchIndexRequest(msg: { indexName: string; query: string; limit: number }): Buffer {
-  const { indexName, query, limit } = msg
+function encodeSearchIndexRequest(msg: {
+  indexName: string
+  query?: string
+  limit?: number
+  fieldQueries?: Record<string, string>
+}): Buffer {
+  const { indexName, query = '', limit = DEFAULT_SEARCH_LIMIT, fieldQueries = {} } = msg
   return Buffer.concat([
     pbStrField(1, indexName),
     pbStrField(2, query || ''),
-    pbVarintField(3, limit || DEFAULT_SEARCH_LIMIT)
+    pbVarintField(3, limit),
+    ...pbMapEntries(4, fieldQueries)
   ])
 }
 
@@ -319,8 +393,11 @@ function makeGrpcServiceDefinition() {
   return {
     login: def('Login', (m: any) => encodeLoginRequest(m.username, m.password), decodeLoginResponse),
     createIndex: def('CreateIndex', encodeCreateIndexRequest, decodeCreateIndexResponse),
+    dropIndex: def('DropIndex', (m: any) => encodeDropIndexRequest(m.indexName), decodeDropIndexResponse),
     listIndices: def('ListIndices', () => Buffer.alloc(0), decodeListIndicesResponse),
+    getIndexFields: def('GetIndexFields', (m: any) => encodeGetIndexFieldsRequest(m.indexName), decodeGetIndexFieldsResponse),
     addDocument: def('AddDocument', encodeAddDocumentRequest, decodeAddDocumentResponse),
+    deleteDocument: def('DeleteDocument', (m: any) => encodeDeleteDocumentRequest(m.indexName, m.docId), decodeDeleteDocumentResponse),
     searchIndex: def('SearchIndex', encodeSearchIndexRequest, decodeSearchIndexResponse)
   }
 }
@@ -396,6 +473,21 @@ class GrpcClient {
     })
   }
 
+  async dropIndex(indexName: string): Promise<void> {
+    await this.withAuth(async () => {
+      const resp = await this.unary('dropIndex', { indexName })
+      if (!resp.success) throw new Error(resp.message || '删除索引失败')
+    })
+  }
+
+  async getIndexFields(indexName: string): Promise<string[]> {
+    return this.withAuth(async () => {
+      const resp = await this.unary('getIndexFields', { indexName })
+      if (!resp.success) throw new Error(resp.message || '获取索引字段失败')
+      return resp.fieldNames
+    })
+  }
+
   async addDocument(indexName: string, docId: string, fields: Record<string, string>): Promise<string> {
     return this.withAuth(async () => {
       const resp = await this.unary('addDocument', { indexName, docId, fields })
@@ -404,9 +496,28 @@ class GrpcClient {
     })
   }
 
+  async deleteDocument(indexName: string, docId: string): Promise<void> {
+    await this.withAuth(async () => {
+      const resp = await this.unary('deleteDocument', { indexName, docId })
+      if (!resp.success) throw new Error(resp.message || '删除文档失败')
+    })
+  }
+
   async search(indexName: string, query: string, limit: number): Promise<IndexSearchResult[]> {
     return this.withAuth(async () => {
       const resp = await this.unary('searchIndex', { indexName, query, limit })
+      if (!resp.success) throw new Error(resp.message || '搜索失败')
+      return resp.results
+    })
+  }
+
+  async searchMultiField(
+    indexName: string,
+    fieldQueries: Record<string, string>,
+    limit: number
+  ): Promise<IndexSearchResult[]> {
+    return this.withAuth(async () => {
+      const resp = await this.unary('searchIndex', { indexName, fieldQueries, limit })
       if (!resp.success) throw new Error(resp.message || '搜索失败')
       return resp.results
     })
@@ -495,6 +606,21 @@ class RestClient {
     })
   }
 
+  async dropIndex(indexName: string): Promise<void> {
+    await this.withAuth(async () => {
+      await this.request(`/api/v1/index/indices/${indexName}`, { method: 'DELETE' })
+    })
+  }
+
+  async getIndexFields(indexName: string): Promise<string[]> {
+    return this.withAuth(async () => {
+      const data = await this.request<Array<{ column_name?: string; name?: string }>>(
+        `/api/v1/index/indices/${indexName}/fields`
+      )
+      return (data || []).map((f) => f.column_name || f.name || '')
+    })
+  }
+
   async addDocument(indexName: string, docId: string, fields: Record<string, string>): Promise<string> {
     return this.withAuth(async () => {
       const data = await this.request<{ doc_id?: string }>(`/api/v1/index/indices/${indexName}/docs`, {
@@ -508,13 +634,45 @@ class RestClient {
     })
   }
 
+  async deleteDocument(indexName: string, docId: string): Promise<void> {
+    await this.withAuth(async () => {
+      await this.request(`/api/v1/index/indices/${indexName}/docs/${docId}/delete`, { method: 'DELETE' })
+    })
+  }
+
   async search(indexName: string, query: string, limit: number): Promise<IndexSearchResult[]> {
     return this.withAuth(async () => {
-      const data = await this.request<{ results: IndexSearchResult[] }>(
+      const data = await this.request<{ results: any[] }>(
         `/api/v1/index/indices/${indexName}/search?q=${encodeURIComponent(query)}&limit=${limit}`
       )
-      return data?.results || []
+      return (data?.results || []).map(mapRestSearchResult)
     })
+  }
+
+  async searchMultiField(
+    indexName: string,
+    fieldQueries: Record<string, string>,
+    limit: number
+  ): Promise<IndexSearchResult[]> {
+    return this.withAuth(async () => {
+      const data = await this.request<{ results: any[] }>(
+        `/api/v1/index/indices/${indexName}/search/multi`,
+        {
+          method: 'POST',
+          body: { field_queries: fieldQueries, limit }
+        }
+      )
+      return (data?.results || []).map(mapRestSearchResult)
+    })
+  }
+}
+
+// REST 搜索返回 snake_case 的 doc_id，映射为应用的 camelCase docId
+function mapRestSearchResult(r: any): IndexSearchResult {
+  return {
+    docId: typeof r?.doc_id === 'string' ? r.doc_id : '',
+    score: typeof r?.score === 'number' ? r.score : 0,
+    fields: r?.fields && typeof r.fields === 'object' ? { ...r.fields } : {}
   }
 }
 
@@ -549,10 +707,25 @@ async function ensureIndex(protocol: IndexProtocol, host: string, port: string):
     const client = getClient(protocol, host, port)
     const indices = await client.listIndices()
     if (indices.includes(INDEX_NAME)) {
-      return { ok: true, message: `索引 ${INDEX_NAME} 已存在`, created: false }
+      // 已有表：校验 schema 版本，缺少 blake3 等新字段时重建
+      try {
+        const names = await client.getIndexFields(INDEX_NAME)
+        const hasAll = INDEX_FIELDS.every((f) => names.includes(f.name))
+        if (hasAll) {
+          return { ok: true, message: `索引 ${INDEX_NAME} 已存在`, created: false }
+        }
+        await client.dropIndex(INDEX_NAME)
+        await client.createIndex(INDEX_NAME, INDEX_FIELDS)
+        return { ok: true, message: `索引 ${INDEX_NAME} schema 已升级（v${INDEX_SCHEMA_VERSION}）并重建`, created: true }
+      } catch (e: any) {
+        // 无法读取字段时视为旧版本，重建一次
+        await client.dropIndex(INDEX_NAME)
+        await client.createIndex(INDEX_NAME, INDEX_FIELDS)
+        return { ok: true, message: `索引 ${INDEX_NAME} 已重建（v${INDEX_SCHEMA_VERSION}）`, created: true }
+      }
     }
     await client.createIndex(INDEX_NAME, INDEX_FIELDS)
-    return { ok: true, message: `已创建索引 ${INDEX_NAME}`, created: true }
+    return { ok: true, message: `已创建索引 ${INDEX_NAME}（v${INDEX_SCHEMA_VERSION}）`, created: true }
   } catch (e: any) {
     return { ok: false, message: e.message || '检查索引失败', created: false }
   }
@@ -568,8 +741,62 @@ const INDEX_FIELDS: Array<{ name: string; fieldType: number; comment?: string }>
   { name: 'server', fieldType: 0, comment: 'S3 服务器地址（本地为空）' },
   { name: 'bucket', fieldType: 0, comment: 'S3 桶（本地为空）' },
   { name: 'key', fieldType: 0, comment: 'S3 key（本地为空）' },
-  { name: 'updated_at', fieldType: 0, comment: '修改时间（ISO）' }
+  { name: 'updated_at', fieldType: 0, comment: '修改时间（ISO）' },
+  { name: 'blake3', fieldType: 0, comment: '文件内容 BLAKE3 摘要（64位hex，去重标识）' }
 ]
+
+// ———————— BLAKE3 摘要（hash-wasm，纯 WASM 无需原生编译） ————————
+
+let hashWasmModule: any = null
+
+function getHashWasm(): any {
+  if (!hashWasmModule) {
+    hashWasmModule = require('hash-wasm')
+  }
+  return hashWasmModule
+}
+
+async function computeBlake3(content: string | Buffer): Promise<string> {
+  const { blake3 } = getHashWasm()
+  return await blake3(Buffer.isBuffer(content) ? content.toString('utf8') : content)
+}
+
+/** 按摘要精确查询是否已索引（多字段搜索 + 返回字段二次校验） */
+async function queryByDigest(
+  protocol: IndexProtocol,
+  host: string,
+  port: string,
+  digest: string
+): Promise<IndexSearchResult | null> {
+  if (!digest) return null
+  const client = getClient(protocol, host, port)
+  const results = await client.searchMultiField(INDEX_NAME, { blake3: digest }, 20)
+  return results.find((r) => r.fields.blake3 === digest) || null
+}
+
+/**
+ * 去重写入：先按 blake3 摘要删除该文件的全部旧索引条目，再添加新文档。
+ * 保证同一文件在索引中只有一条记录（BLAKE3 作为去重标识）。
+ */
+async function upsertDocument(
+  client: GrpcClient | RestClient,
+  fields: Record<string, string>
+): Promise<string> {
+  const digest = fields.blake3
+  if (digest) {
+    try {
+      const old = await client.searchMultiField(INDEX_NAME, { blake3: digest }, 50)
+      for (const hit of old) {
+        if (hit.fields.blake3 === digest) {
+          await client.deleteDocument(INDEX_NAME, hit.docId)
+        }
+      }
+    } catch {
+      // 旧条目查询/删除失败不阻塞新文档写入
+    }
+  }
+  return client.addDocument(INDEX_NAME, '', fields)
+}
 
 function collectMarkdownFiles(dirPath: string): string[] {
   const results: string[] = []
@@ -607,6 +834,7 @@ async function indexLocalFile(
 ): Promise<{ ok: boolean; message: string; docId?: string }> {
   try {
     const content = readFileSync(filePath, 'utf8')
+    const digest = await computeBlake3(content)
     let mtime = new Date().toISOString()
     try {
       mtime = statSync(filePath).mtime.toISOString()
@@ -623,10 +851,11 @@ async function indexLocalFile(
       server: '',
       bucket: '',
       key: '',
-      updatedAt: mtime
+      updatedAt: mtime,
+      blake3: digest
     })
     const client = getClient(protocol, host, port)
-    const docId = await client.addDocument(INDEX_NAME, '', fields)
+    const docId = await upsertDocument(client, fields)
     return { ok: true, message: `已生成索引：${basename(filePath)}`, docId }
   } catch (e: any) {
     return { ok: false, message: `索引 ${basename(filePath)} 失败：${e.message || e}`, docId: undefined }
@@ -695,6 +924,7 @@ async function indexS3File(
 ): Promise<{ ok: boolean; message: string; docId?: string }> {
   try {
     const content = await fetchS3Content(config, bucket, key)
+    const digest = await computeBlake3(content)
     const fields = buildFields({
       docId: s3DocId(config, bucket, key),
       title: basename(key, extname(key)) || basename(key),
@@ -705,10 +935,11 @@ async function indexS3File(
       server: (config.endpoint || 's3.amazonaws.com').replace(/\/+$/, ''),
       bucket,
       key,
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
+      blake3: digest
     })
     const client = getClient(protocol, host, port)
-    const docId = await client.addDocument(INDEX_NAME, '', fields)
+    const docId = await upsertDocument(client, fields)
     return { ok: true, message: `已生成索引：${basename(key)}`, docId }
   } catch (e: any) {
     return { ok: false, message: `索引 ${basename(key)} 失败：${e.message || e}`, docId: undefined }
@@ -761,6 +992,67 @@ export function registerIndexSearchHandlers(): void {
       key: string
     ) => {
       return indexS3File(protocol, host, port, config, bucket, key)
+    }
+  )
+
+  // 批量查询文件是否已索引（按 BLAKE3 摘要精确匹配）
+  ipcMain.handle(
+    'index:checkFiles',
+    async (_e, protocol: IndexProtocol, host: string, port: string, paths: string[]) => {
+      const results: Record<string, boolean> = {}
+      const CONCURRENCY = 4
+      const work = paths.filter(Boolean)
+      let cursor = 0
+      const worker = async () => {
+        while (cursor < work.length) {
+          const p = work[cursor++]
+          try {
+            const content = readFileSync(p, 'utf8')
+            const digest = await computeBlake3(content)
+            const hit = await queryByDigest(protocol, host, port, digest)
+            results[p] = !!hit
+          } catch {
+            results[p] = false
+          }
+        }
+      }
+      await Promise.all(
+        Array.from({ length: Math.min(CONCURRENCY, Math.max(work.length, 1)) }, () => worker())
+      )
+      return { ok: true, message: '', results }
+    }
+  )
+
+  // 删除索引中的一条文档（按数字 row_id）
+  ipcMain.handle(
+    'index:deleteDoc',
+    async (
+      _e,
+      protocol: IndexProtocol,
+      host: string,
+      port: string,
+      docId: string,
+      fields?: Record<string, string>
+    ) => {
+      try {
+        // 校验 docId 为数字 row_id，避免无效 ID 被服务端静默忽略（unwrap_or(0) 假成功）
+        if (!/^\d+$/.test(docId || '')) {
+          return { ok: false, message: `无效的文档 ID：${docId || '（空）'}` }
+        }
+        const client = getClient(protocol, host, port)
+        await client.deleteDocument(INDEX_NAME, docId)
+        // 删除后按 BLAKE3 摘要验证真正生效：若该摘要仍命中本条，说明删除未持久化
+        const digest = fields?.blake3
+        if (digest) {
+          const remaining = await client.searchMultiField(INDEX_NAME, { blake3: digest }, 20)
+          if (remaining.some((r) => r.docId === docId && r.fields.blake3 === digest)) {
+            return { ok: false, message: '删除未生效：服务端仍存在该条目（doc_id 不匹配？）' }
+          }
+        }
+        return { ok: true, message: '已删除索引文档' }
+      } catch (e: any) {
+        return { ok: false, message: e.message || '删除索引文档失败' }
+      }
     }
   )
 }

@@ -200,9 +200,13 @@ const { isDragging, startDrag } = useDragDivider({
 
 .sidebar-footer {
   flex-shrink: 0;
+  height: var(--footer-bar-height);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
   border-top: 1px solid var(--border-color);
   background: var(--bg-sidebar);
-  padding: 4px 8px;
+  padding: 0 8px;
 }
 
 .sidebar-settings {
