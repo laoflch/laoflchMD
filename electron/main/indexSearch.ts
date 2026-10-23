@@ -13,7 +13,6 @@ import { readFileSync, readdirSync, statSync } from 'fs'
  *   文件导航打开目录时通过摘要查询「是否已索引」
  */
 
-const INDEX_NAME = 'md_docs'
 const DEFAULT_USER = 'admin'
 const DEFAULT_PASS = 'laoflchdb'
 const DEFAULT_SEARCH_LIMIT = 20
@@ -702,30 +701,35 @@ function s3DocId(config: S3IndexConfig, bucket: string, key: string): string {
   return `${endpoint}/${bucket}/${key}`
 }
 
-async function ensureIndex(protocol: IndexProtocol, host: string, port: string): Promise<{ ok: boolean; message: string; created: boolean }> {
+async function ensureIndex(
+  protocol: IndexProtocol,
+  host: string,
+  port: string,
+  indexName: string
+): Promise<{ ok: boolean; message: string; created: boolean }> {
   try {
     const client = getClient(protocol, host, port)
     const indices = await client.listIndices()
-    if (indices.includes(INDEX_NAME)) {
+    if (indices.includes(indexName)) {
       // 已有表：校验 schema 版本，缺少 blake3 等新字段时重建
       try {
-        const names = await client.getIndexFields(INDEX_NAME)
+        const names = await client.getIndexFields(indexName)
         const hasAll = INDEX_FIELDS.every((f) => names.includes(f.name))
         if (hasAll) {
-          return { ok: true, message: `索引 ${INDEX_NAME} 已存在`, created: false }
+          return { ok: true, message: `索引 ${indexName} 已存在`, created: false }
         }
-        await client.dropIndex(INDEX_NAME)
-        await client.createIndex(INDEX_NAME, INDEX_FIELDS)
-        return { ok: true, message: `索引 ${INDEX_NAME} schema 已升级（v${INDEX_SCHEMA_VERSION}）并重建`, created: true }
+        await client.dropIndex(indexName)
+        await client.createIndex(indexName, INDEX_FIELDS)
+        return { ok: true, message: `索引 ${indexName} schema 已升级（v${INDEX_SCHEMA_VERSION}）并重建`, created: true }
       } catch (e: any) {
         // 无法读取字段时视为旧版本，重建一次
-        await client.dropIndex(INDEX_NAME)
-        await client.createIndex(INDEX_NAME, INDEX_FIELDS)
-        return { ok: true, message: `索引 ${INDEX_NAME} 已重建（v${INDEX_SCHEMA_VERSION}）`, created: true }
+        await client.dropIndex(indexName)
+        await client.createIndex(indexName, INDEX_FIELDS)
+        return { ok: true, message: `索引 ${indexName} 已重建（v${INDEX_SCHEMA_VERSION}）`, created: true }
       }
     }
-    await client.createIndex(INDEX_NAME, INDEX_FIELDS)
-    return { ok: true, message: `已创建索引 ${INDEX_NAME}（v${INDEX_SCHEMA_VERSION}）`, created: true }
+    await client.createIndex(indexName, INDEX_FIELDS)
+    return { ok: true, message: `已创建索引 ${indexName}（v${INDEX_SCHEMA_VERSION}）`, created: true }
   } catch (e: any) {
     return { ok: false, message: e.message || '检查索引失败', created: false }
   }
@@ -756,7 +760,7 @@ function getHashWasm(): any {
   return hashWasmModule
 }
 
-async function computeBlake3(content: string | Buffer): Promise<string> {
+export async function computeBlake3(content: string | Buffer): Promise<string> {
   const { blake3 } = getHashWasm()
   return await blake3(Buffer.isBuffer(content) ? content.toString('utf8') : content)
 }
@@ -766,11 +770,12 @@ async function queryByDigest(
   protocol: IndexProtocol,
   host: string,
   port: string,
+  indexName: string,
   digest: string
 ): Promise<IndexSearchResult | null> {
   if (!digest) return null
   const client = getClient(protocol, host, port)
-  const results = await client.searchMultiField(INDEX_NAME, { blake3: digest }, 20)
+  const results = await client.searchMultiField(indexName, { blake3: digest }, 20)
   return results.find((r) => r.fields.blake3 === digest) || null
 }
 
@@ -780,22 +785,23 @@ async function queryByDigest(
  */
 async function upsertDocument(
   client: GrpcClient | RestClient,
+  indexName: string,
   fields: Record<string, string>
 ): Promise<string> {
   const digest = fields.blake3
   if (digest) {
     try {
-      const old = await client.searchMultiField(INDEX_NAME, { blake3: digest }, 50)
+      const old = await client.searchMultiField(indexName, { blake3: digest }, 50)
       for (const hit of old) {
         if (hit.fields.blake3 === digest) {
-          await client.deleteDocument(INDEX_NAME, hit.docId)
+          await client.deleteDocument(indexName, hit.docId)
         }
       }
     } catch {
       // 旧条目查询/删除失败不阻塞新文档写入
     }
   }
-  return client.addDocument(INDEX_NAME, '', fields)
+  return client.addDocument(indexName, '', fields)
 }
 
 function collectMarkdownFiles(dirPath: string): string[] {
@@ -830,10 +836,15 @@ async function indexLocalFile(
   protocol: IndexProtocol,
   host: string,
   port: string,
+  indexName: string,
   filePath: string
 ): Promise<{ ok: boolean; message: string; docId?: string }> {
   try {
     const content = readFileSync(filePath, 'utf8')
+    if (!content.trim()) {
+      // 内容为空：无法索引，直接跳过（不报失败）
+      return { ok: true, message: `跳过空文件：${basename(filePath)}`, docId: undefined }
+    }
     const digest = await computeBlake3(content)
     let mtime = new Date().toISOString()
     try {
@@ -855,7 +866,7 @@ async function indexLocalFile(
       blake3: digest
     })
     const client = getClient(protocol, host, port)
-    const docId = await upsertDocument(client, fields)
+    const docId = await upsertDocument(client, indexName, fields)
     return { ok: true, message: `已生成索引：${basename(filePath)}`, docId }
   } catch (e: any) {
     return { ok: false, message: `索引 ${basename(filePath)} 失败：${e.message || e}`, docId: undefined }
@@ -866,13 +877,17 @@ async function indexDir(
   protocol: IndexProtocol,
   host: string,
   port: string,
-  dirPath: string
+  indexName: string,
+  dirPath: string,
+  onProgress?: (done: number, total: number, fileName: string) => void
 ): Promise<{ ok: boolean; message: string; count: number }> {
   const files = collectMarkdownFiles(dirPath)
   let okCount = 0
   let firstErr: string | null = null
-  for (const filePath of files) {
-    const res = await indexLocalFile(protocol, host, port, filePath)
+  for (let i = 0; i < files.length; i++) {
+    const filePath = files[i]
+    onProgress?.(i + 1, files.length, basename(filePath))
+    const res = await indexLocalFile(protocol, host, port, indexName, filePath)
     if (res.ok) okCount++
     else if (!firstErr) firstErr = res.message
   }
@@ -891,7 +906,7 @@ export interface S3IndexConfig {
   secretAccessKey: string
 }
 
-async function fetchS3Content(config: S3IndexConfig, bucket: string, key: string): Promise<string> {
+export async function fetchS3Content(config: S3IndexConfig, bucket: string, key: string): Promise<string> {
   let s3Mod: any = null
   if (!s3Mod) s3Mod = require('@aws-sdk/client-s3')
   const { S3Client, GetObjectCommand } = s3Mod
@@ -918,12 +933,17 @@ async function indexS3File(
   protocol: IndexProtocol,
   host: string,
   port: string,
+  indexName: string,
   config: S3IndexConfig,
   bucket: string,
   key: string
 ): Promise<{ ok: boolean; message: string; docId?: string }> {
   try {
     const content = await fetchS3Content(config, bucket, key)
+    if (!content.trim()) {
+      // 内容为空：无法索引，直接跳过（不报失败）
+      return { ok: true, message: `跳过空文件：${basename(key)}`, docId: undefined }
+    }
     const digest = await computeBlake3(content)
     const fields = buildFields({
       docId: s3DocId(config, bucket, key),
@@ -939,7 +959,7 @@ async function indexS3File(
       blake3: digest
     })
     const client = getClient(protocol, host, port)
-    const docId = await upsertDocument(client, fields)
+    const docId = await upsertDocument(client, indexName, fields)
     return { ok: true, message: `已生成索引：${basename(key)}`, docId }
   } catch (e: any) {
     return { ok: false, message: `索引 ${basename(key)} 失败：${e.message || e}`, docId: undefined }
@@ -949,16 +969,30 @@ async function indexS3File(
 // ———————— IPC Handlers ————————
 
 export function registerIndexSearchHandlers(): void {
-  ipcMain.handle('index:ensure', async (_e, protocol: IndexProtocol, host: string, port: string) => {
-    return ensureIndex(protocol, host, port)
-  })
+  // 本机主机名（状态栏显示本地文件地址用）
+  ipcMain.handle('app:hostname', () => getHostname())
+
+  ipcMain.handle(
+    'index:ensure',
+    async (_e, protocol: IndexProtocol, host: string, port: string, indexName: string) => {
+      return ensureIndex(protocol, host, port, indexName)
+    }
+  )
 
   ipcMain.handle(
     'index:search',
-    async (_e, protocol: IndexProtocol, host: string, port: string, query: string, limit?: number) => {
+    async (
+      _e,
+      protocol: IndexProtocol,
+      host: string,
+      port: string,
+      indexName: string,
+      query: string,
+      limit?: number
+    ) => {
       try {
         const client = getClient(protocol, host, port)
-        const results = await client.search(INDEX_NAME, query, limit || DEFAULT_SEARCH_LIMIT)
+        const results = await client.search(indexName, query, limit || DEFAULT_SEARCH_LIMIT)
         return { ok: true, message: '', results }
       } catch (e: any) {
         return { ok: false, message: e.message || '搜索失败', results: [] }
@@ -968,15 +1002,17 @@ export function registerIndexSearchHandlers(): void {
 
   ipcMain.handle(
     'index:indexLocal',
-    async (_e, protocol: IndexProtocol, host: string, port: string, filePath: string) => {
-      return indexLocalFile(protocol, host, port, filePath)
+    async (_e, protocol: IndexProtocol, host: string, port: string, indexName: string, filePath: string) => {
+      return indexLocalFile(protocol, host, port, indexName, filePath)
     }
   )
 
   ipcMain.handle(
     'index:indexDir',
-    async (_e, protocol: IndexProtocol, host: string, port: string, dirPath: string) => {
-      return indexDir(protocol, host, port, dirPath)
+    async (e, protocol: IndexProtocol, host: string, port: string, indexName: string, dirPath: string) => {
+      return indexDir(protocol, host, port, indexName, dirPath, (done, total, fileName) => {
+        e.sender.send('index:progress', { done, total, fileName })
+      })
     }
   )
 
@@ -987,18 +1023,19 @@ export function registerIndexSearchHandlers(): void {
       protocol: IndexProtocol,
       host: string,
       port: string,
+      indexName: string,
       config: S3IndexConfig,
       bucket: string,
       key: string
     ) => {
-      return indexS3File(protocol, host, port, config, bucket, key)
+      return indexS3File(protocol, host, port, indexName, config, bucket, key)
     }
   )
 
   // 批量查询文件是否已索引（按 BLAKE3 摘要精确匹配）
   ipcMain.handle(
     'index:checkFiles',
-    async (_e, protocol: IndexProtocol, host: string, port: string, paths: string[]) => {
+    async (_e, protocol: IndexProtocol, host: string, port: string, indexName: string, paths: string[]) => {
       const results: Record<string, boolean> = {}
       const CONCURRENCY = 4
       const work = paths.filter(Boolean)
@@ -1008,8 +1045,13 @@ export function registerIndexSearchHandlers(): void {
           const p = work[cursor++]
           try {
             const content = readFileSync(p, 'utf8')
+            if (!content.trim()) {
+              // 空内容文件不参与检测，视为未索引
+              results[p] = false
+              continue
+            }
             const digest = await computeBlake3(content)
-            const hit = await queryByDigest(protocol, host, port, digest)
+            const hit = await queryByDigest(protocol, host, port, indexName, digest)
             results[p] = !!hit
           } catch {
             results[p] = false
@@ -1023,6 +1065,83 @@ export function registerIndexSearchHandlers(): void {
     }
   )
 
+  // 批量查询 S3 文件是否已索引（按 BLAKE3 摘要精确匹配，逐对象下载内容计算）
+  ipcMain.handle(
+    'index:checkS3Files',
+    async (
+      _e,
+      protocol: IndexProtocol,
+      host: string,
+      port: string,
+      indexName: string,
+      config: S3IndexConfig,
+      bucket: string,
+      keys: string[]
+    ) => {
+      const results: Record<string, boolean> = {}
+      const CONCURRENCY = 4
+      const work = keys.filter(Boolean)
+      let cursor = 0
+      const worker = async () => {
+        while (cursor < work.length) {
+          const key = work[cursor++]
+          try {
+            const content = await fetchS3Content(config, bucket, key)
+            if (!content.trim()) {
+              // 空内容文件不参与检测，视为未索引
+              results[key] = false
+              continue
+            }
+            const digest = await computeBlake3(content)
+            const hit = await queryByDigest(protocol, host, port, indexName, digest)
+            results[key] = !!hit
+          } catch {
+            results[key] = false
+          }
+        }
+      }
+      await Promise.all(
+        Array.from({ length: Math.min(CONCURRENCY, Math.max(work.length, 1)) }, () => worker())
+      )
+      return { ok: true, message: '', results }
+    }
+  )
+
+  // 查询单条索引文档详情：按文件内容 BLAKE3 摘要精确匹配（path 含特殊字符，
+  // 分词后模糊查询不可靠，摘要为单 token 可精确命中）
+  ipcMain.handle(
+    'index:getDoc',
+    async (
+      _e,
+      protocol: IndexProtocol,
+      host: string,
+      port: string,
+      indexName: string,
+      kind: 'local' | 's3',
+      path: string,
+      config?: S3IndexConfig,
+      bucket?: string,
+      key?: string
+    ) => {
+      try {
+        let content: string
+        if (kind === 's3') {
+          if (!config || !bucket || !key) return { ok: false, message: '无效的对象参数', doc: null }
+          content = await fetchS3Content(config, bucket, key)
+        } else {
+          content = readFileSync(path, 'utf8')
+        }
+        if (!content.trim()) return { ok: false, message: '空文件没有索引条目', doc: null }
+        const digest = await computeBlake3(content)
+        const hit = await queryByDigest(protocol, host, port, indexName, digest)
+        if (!hit) return { ok: false, message: '未找到对应的索引条目', doc: null }
+        return { ok: true, message: '', doc: hit }
+      } catch (e) {
+        return { ok: false, message: e instanceof Error ? e.message : '获取索引详情失败', doc: null }
+      }
+    }
+  )
+
   // 删除索引中的一条文档（按数字 row_id）
   ipcMain.handle(
     'index:deleteDoc',
@@ -1031,6 +1150,7 @@ export function registerIndexSearchHandlers(): void {
       protocol: IndexProtocol,
       host: string,
       port: string,
+      indexName: string,
       docId: string,
       fields?: Record<string, string>
     ) => {
@@ -1040,11 +1160,11 @@ export function registerIndexSearchHandlers(): void {
           return { ok: false, message: `无效的文档 ID：${docId || '（空）'}` }
         }
         const client = getClient(protocol, host, port)
-        await client.deleteDocument(INDEX_NAME, docId)
+        await client.deleteDocument(indexName, docId)
         // 删除后按 BLAKE3 摘要验证真正生效：若该摘要仍命中本条，说明删除未持久化
         const digest = fields?.blake3
         if (digest) {
-          const remaining = await client.searchMultiField(INDEX_NAME, { blake3: digest }, 20)
+          const remaining = await client.searchMultiField(indexName, { blake3: digest }, 20)
           if (remaining.some((r) => r.docId === docId && r.fields.blake3 === digest)) {
             return { ok: false, message: '删除未生效：服务端仍存在该条目（doc_id 不匹配？）' }
           }

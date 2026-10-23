@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useEditorStore } from '../stores/editor'
 import { useSettingsStore } from '../stores/settings'
-import type { FileEntry } from '../types'
+import { useToastStore } from '../stores/toast'
+import type { FileEntry, IndexSearchResult } from '../types'
 import TreeNodeItem from './TreeNodeItem.vue'
+import IndexInfoDialog from './IndexInfoDialog.vue'
 
 const store = useEditorStore()
 const settings = useSettingsStore()
+const toastStore = useToastStore()
 
 const emit = defineEmits<{
   close: []
@@ -52,6 +55,7 @@ async function openDir(dirPath: string) {
   // Save to localStorage for persistence across restarts
   localStorage.setItem('lastOpenedDir', dirPath)
   checkIndexed(treeData.value)
+  checkVectorIndexed(treeData.value)
 }
 
 async function openDirectory() {
@@ -63,14 +67,9 @@ async function openDirectory() {
 
 async function selectNode(entry: FileEntry) {
   if (entry.isDirectory) {
-    // Toggle directory expansion — create new Set to trigger reactivity
-    const newExpanded = new Set(expanded.value)
-    if (newExpanded.has(entry.path)) {
-      newExpanded.delete(entry.path)
-    } else {
-      newExpanded.add(entry.path)
-    }
-    expanded.value = newExpanded
+    // 点击目录：选中并展开/收起
+    selectedPath.value = entry.path
+    toggleExpand(entry)
     return
   }
 
@@ -86,6 +85,18 @@ async function selectNode(entry: FileEntry) {
   } catch (err) {
     console.error('Failed to open file:', err)
   }
+}
+
+// 展开/收起目录（双击行或点击三角号触发）
+function toggleExpand(entry: FileEntry) {
+  if (!entry.isDirectory) return
+  const newExpanded = new Set(expanded.value)
+  if (newExpanded.has(entry.path)) {
+    newExpanded.delete(entry.path)
+  } else {
+    newExpanded.add(entry.path)
+  }
+  expanded.value = newExpanded
 }
 
 async function refreshTree() {
@@ -105,6 +116,64 @@ watch(() => store.filePath, (newPath) => {
     selectedPath.value = newPath
   }
 })
+
+// 全文索引功能是否关闭（索引服务总开关 / 全文索引子开关）
+const fulltextOff = computed(() => !settings.indexEnabled || !settings.fulltextEnabled)
+// 向量索引功能是否关闭（索引服务总开关 / 向量文本索引子开关）
+const vectorOff = computed(() => !settings.indexEnabled || !settings.vectorTextEnabled)
+
+// 开关变化时同步刷新「全文」标签：关闭清空，重新打开时重新检测
+watch([() => settings.indexEnabled, () => settings.fulltextEnabled], () => {
+  if (fulltextOff.value) {
+    indexedPaths.value = new Set()
+  } else if (rootDir.value) {
+    checkIndexed(treeData.value)
+  }
+})
+
+// 开关变化时同步刷新「向量」标签
+watch([() => settings.indexEnabled, () => settings.vectorTextEnabled], () => {
+  if (vectorOff.value) {
+    vectorIndexedPaths.value = new Set()
+  } else if (rootDir.value) {
+    checkVectorIndexed(treeData.value)
+  }
+})
+
+// 索引详情弹窗状态
+const indexInfoOpen = ref(false)
+const indexInfoDoc = ref<IndexSearchResult | null>(null)
+const indexInfoEntry = ref<FileEntry | null>(null)
+
+// 点击「全文」标签：查询并展示索引详细信息
+async function showIndexInfo(entry: FileEntry) {
+  indexInfoEntry.value = entry
+  try {
+    const protocol = settings.indexProtocol
+    const host = protocol === 'grpc' ? settings.grpcHost : settings.restHost
+    const port = protocol === 'grpc' ? settings.grpcPort : settings.restPort
+    const res = await window.api.indexGetDoc(protocol, host, port, settings.indexName, 'local', entry.path)
+    if (!res.ok || !res.doc) {
+      toastStore.pushToast('err', res.message || '获取索引详情失败')
+      return
+    }
+    indexInfoDoc.value = res.doc
+    indexInfoOpen.value = true
+  } catch (e) {
+    toastStore.pushToast('err', e instanceof Error ? e.message : '获取索引详情失败')
+  }
+}
+
+// 索引项被删除后：移除对应文件的「全文」标签
+function onIndexInfoDeleted() {
+  const entry = indexInfoEntry.value
+  if (entry) {
+    const next = new Set(indexedPaths.value)
+    next.delete(entry.path)
+    indexedPaths.value = next
+  }
+  indexInfoEntry.value = null
+}
 
 // Context menu handlers
 function showContextMenu(event: MouseEvent, entry: FileEntry) {
@@ -176,42 +245,49 @@ async function handleRenameComplete(oldPath: string, newPath: string | null) {
 
 // 全文检索：生成索引
 const indexing = ref(false)
-const indexNotice = ref<{ type: 'ok' | 'err'; text: string } | null>(null)
-let indexNoticeTimer: ReturnType<typeof setTimeout> | null = null
-
-function showIndexNotice(type: 'ok' | 'err', text: string) {
-  indexNotice.value = { type, text }
-  if (indexNoticeTimer) clearTimeout(indexNoticeTimer)
-  indexNoticeTimer = setTimeout(() => {
-    indexNotice.value = null
-  }, 6000)
-}
 
 async function handleIndex() {
   closeContextMenu()
   const targetPath = contextMenu.value.targetPath
   const isDir = contextMenu.value.isDirectory
   if (!targetPath) return
+  // 索引服务关闭时禁用全文索引功能
+  if (!settings.indexEnabled || !settings.fulltextEnabled) {
+    toastStore.pushToast(
+      'err',
+      settings.indexEnabled ? '全文索引服务已关闭，请在全局设置中启用' : '索引服务已关闭，请在全局设置中启用'
+    )
+    return
+  }
   indexing.value = true
+  const protocol = settings.indexProtocol
+  const host = protocol === 'grpc' ? settings.grpcHost : settings.restHost
+  const port = protocol === 'grpc' ? settings.grpcPort : settings.restPort
   try {
-    const protocol = settings.indexProtocol
-    const host = protocol === 'grpc' ? settings.grpcHost : settings.restHost
-    const port = protocol === 'grpc' ? settings.grpcPort : settings.restPort
     if (isDir) {
-      const res = await window.api.indexDir(protocol, host, port, targetPath)
-      showIndexNotice(res.ok ? 'ok' : 'err', res.message)
-      if (res.ok) checkIndexed(treeData.value)
+      // 目录：逐文件建索引，每个文件独立一条进度提示（堆叠显示，8 秒后自动消失）
+      const unsubscribe = window.api.onIndexProgress((p) => {
+        toastStore.pushToast('progress', `正在索引 ${p.done}/${p.total}: ${p.fileName}`, true, 8000)
+      })
+      try {
+        const res = await window.api.indexDir(protocol, host, port, settings.indexName, targetPath)
+        toastStore.pushToast(res.ok ? 'ok' : 'err', res.message)
+        if (res.ok) checkIndexed(treeData.value)
+      } finally {
+        unsubscribe()
+      }
     } else {
-      const res = await window.api.indexLocalFile(protocol, host, port, targetPath)
-      showIndexNotice(res.ok ? 'ok' : 'err', res.message)
-      if (res.ok) {
+      const res = await window.api.indexLocalFile(protocol, host, port, settings.indexName, targetPath)
+      toastStore.pushToast(res.ok ? 'ok' : 'err', res.message)
+      // 仅真正索引成功（跳过空文件时 docId 为空）才标记「全文」
+      if (res.ok && res.docId !== undefined) {
         const next = new Set(indexedPaths.value)
         next.add(targetPath)
         indexedPaths.value = next
       }
     }
   } catch (e: unknown) {
-    showIndexNotice('err', e instanceof Error ? e.message : '生成索引失败')
+    toastStore.pushToast('err', e instanceof Error ? e.message : '生成索引失败')
   } finally {
     indexing.value = false
   }
@@ -222,6 +298,11 @@ const indexedPaths = ref<Set<string>>(new Set())
 let checkSeq = 0
 
 async function checkIndexed(files: FileEntry[]) {
+  // 索引服务关闭时不检测，清空「全文」标签
+  if (!settings.indexEnabled || !settings.fulltextEnabled) {
+    indexedPaths.value = new Set()
+    return
+  }
   const mdFiles = files.filter((f) => f.isMarkdown && !f.isDirectory)
   if (mdFiles.length === 0) return
   const seq = ++checkSeq
@@ -233,6 +314,7 @@ async function checkIndexed(files: FileEntry[]) {
       protocol,
       host,
       port,
+      settings.indexName,
       mdFiles.map((f) => f.path)
     )
     if (seq !== checkSeq) return // 丢弃过期结果
@@ -250,6 +332,124 @@ async function checkIndexed(files: FileEntry[]) {
 
 function handleChildrenLoaded(entries: FileEntry[]) {
   checkIndexed(entries)
+  checkVectorIndexed(entries)
+}
+
+// 向量索引：生成向量索引（仅 gRPC，复用 grpc 地址/端口）
+const vectorIndexing = ref(false)
+
+async function handleVectorIndex() {
+  closeContextMenu()
+  const targetPath = contextMenu.value.targetPath
+  const isDir = contextMenu.value.isDirectory
+  if (!targetPath) return
+  // 索引服务关闭时禁用向量索引功能
+  if (!settings.indexEnabled || !settings.vectorTextEnabled) {
+    toastStore.pushToast(
+      'err',
+      settings.indexEnabled ? '向量文本索引服务已关闭，请在全局设置中启用' : '索引服务已关闭，请在全局设置中启用'
+    )
+    return
+  }
+  vectorIndexing.value = true
+  try {
+    const chunkSize = settings.vectorChunkSize
+    const overlap = settings.vectorChunkOverlap
+    if (isDir) {
+      // 目录：逐文件建向量索引，每个文件独立一条进度提示
+      const unsubscribe = window.api.onVectorProgress((p) => {
+        toastStore.pushToast('progress', `正在向量索引 ${p.done}/${p.total}: ${p.fileName}`, true, 8000)
+      })
+      try {
+        const res = await window.api.vectorIndexDir(
+          settings.grpcHost,
+          settings.grpcPort,
+          settings.vectorIndexName,
+          settings.vectorModelName,
+          targetPath,
+          chunkSize,
+          overlap
+        )
+        toastStore.pushToast(res.ok ? 'ok' : 'err', res.message)
+        if (res.ok) checkVectorIndexed(treeData.value)
+      } finally {
+        unsubscribe()
+      }
+    } else {
+      const res = await window.api.vectorIndexLocal(
+        settings.grpcHost,
+        settings.grpcPort,
+        settings.vectorIndexName,
+        settings.vectorModelName,
+        targetPath,
+        chunkSize,
+        overlap
+      )
+      toastStore.pushToast(res.ok ? 'ok' : 'err', res.message)
+      // 仅真正索引成功（跳过空文件时 count 为 0）才标记「向量」
+      if (res.ok && res.count > 0) {
+        const next = new Set(vectorIndexedPaths.value)
+        next.add(targetPath)
+        vectorIndexedPaths.value = next
+      }
+    }
+  } catch (e: unknown) {
+    toastStore.pushToast('err', e instanceof Error ? e.message : '生成向量索引失败')
+  } finally {
+    vectorIndexing.value = false
+  }
+}
+
+// 向量索引：删除目标文件/目录的向量索引
+async function handleVectorDelete() {
+  closeContextMenu()
+  const targetPath = contextMenu.value.targetPath
+  if (!targetPath) return
+  try {
+    const res = await window.api.vectorDeleteFile(
+      settings.grpcHost,
+      settings.grpcPort,
+      settings.vectorIndexName,
+      'local',
+      targetPath
+    )
+    toastStore.pushToast(res.ok ? 'ok' : 'err', res.message)
+    if (res.ok) {
+      const next = new Set(vectorIndexedPaths.value)
+      next.delete(targetPath)
+      vectorIndexedPaths.value = next
+    }
+  } catch (e: unknown) {
+    toastStore.pushToast('err', e instanceof Error ? e.message : '删除向量索引失败')
+  }
+}
+
+// 向量索引：已生成向量索引的文件路径集合（本地映射查询，无需访问服务端）
+const vectorIndexedPaths = ref<Set<string>>(new Set())
+let vectorCheckSeq = 0
+
+async function checkVectorIndexed(files: FileEntry[]) {
+  // 索引服务关闭时不检测，清空「向量」标签
+  if (!settings.indexEnabled || !settings.vectorTextEnabled) {
+    vectorIndexedPaths.value = new Set()
+    return
+  }
+  const mdFiles = files.filter((f) => f.isMarkdown && !f.isDirectory)
+  if (mdFiles.length === 0) return
+  const seq = ++vectorCheckSeq
+  try {
+    const res = await window.api.vectorCheckFiles(mdFiles.map((f) => f.path))
+    if (seq !== vectorCheckSeq) return // 丢弃过期结果
+    if (!res.ok) return
+    const next = new Set(vectorIndexedPaths.value)
+    for (const [p, indexed] of Object.entries(res.results)) {
+      if (indexed) next.add(p)
+      else next.delete(p)
+    }
+    vectorIndexedPaths.value = next
+  } catch {
+    // 本地映射读取失败等静默忽略，标签不显示
+  }
 }
 
 // Click outside context menu to close it
@@ -347,14 +547,20 @@ defineExpose({ refreshTree, openDir })
         :expanded="expanded"
         :selected-path="selectedPath"
         :renaming-path="renamingPath"
-        :indexed="indexedPaths.has(entry.path)"
+        :indexed-paths="indexedPaths"
+        :vector-indexed-paths="vectorIndexedPaths"
         :depth="0"
         @select="selectNode"
+        @toggle-expand="toggleExpand"
         @contextmenu="showContextMenu"
         @rename-complete="handleRenameComplete"
         @children-loaded="handleChildrenLoaded"
+        @index-click="showIndexInfo"
       />
     </div>
+
+    <!-- 索引详情弹窗 -->
+    <IndexInfoDialog :open="indexInfoOpen" :doc="indexInfoDoc" @close="indexInfoOpen = false" @deleted="onIndexInfoDeleted" />
 
     <!-- Context menu -->
     <div
@@ -380,11 +586,26 @@ defineExpose({ refreshTree, openDir })
         </svg>
         重命名
       </div>
-      <div class="context-menu-item" :class="{ disabled: indexing }" @click="handleIndex">
+      <div class="context-menu-item" :class="{ disabled: indexing || fulltextOff }" @click="handleIndex">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M8 2.5v11M3.5 8h9"/>
         </svg>
-        生成索引
+        生成全文索引
+      </div>
+      <div class="context-menu-item" :class="{ disabled: vectorIndexing || vectorOff }" @click="handleVectorIndex">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="4.5" cy="5" r="1.6"/>
+          <circle cx="11.5" cy="4" r="1.6"/>
+          <circle cx="11" cy="11.5" r="1.6"/>
+          <path d="M4.5 5l5 5M11.5 4l-3 1.8M6.6 6.4l4.4 3"/>
+        </svg>
+        生成向量索引
+      </div>
+      <div class="context-menu-item" :class="{ disabled: vectorOff }" @click="handleVectorDelete">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6 1.5h4M2.5 4h11M5.5 4l.5 10h4l.5-10M6.5 6.5v5M9.5 6.5v5"/>
+        </svg>
+        删除向量索引
       </div>
       <div class="context-menu-divider"></div>
       <div class="context-menu-item danger" @click="handleDelete">
@@ -394,11 +615,6 @@ defineExpose({ refreshTree, openDir })
         </svg>
         删除
       </div>
-    </div>
-
-    <!-- 索引提示 -->
-    <div v-if="indexNotice" class="index-notice" :class="indexNotice.type" @click="indexNotice = null">
-      {{ indexNotice.text }}
     </div>
   </div>
 </template>
@@ -589,31 +805,5 @@ defineExpose({ refreshTree, openDir })
 
 @keyframes spin {
   to { transform: rotate(360deg); }
-}
-
-/* 索引提示 */
-.index-notice {
-  position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: 12px;
-  padding: 8px 10px;
-  border-radius: 4px;
-  font-size: 12px;
-  cursor: pointer;
-  z-index: 50;
-  word-break: break-all;
-}
-
-.index-notice.ok {
-  background: rgba(40, 167, 69, 0.15);
-  color: #28a745;
-  border: 1px solid rgba(40, 167, 69, 0.4);
-}
-
-.index-notice.err {
-  background: rgba(220, 53, 69, 0.15);
-  color: #dc3545;
-  border: 1px solid rgba(220, 53, 69, 0.4);
 }
 </style>

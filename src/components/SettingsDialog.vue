@@ -18,6 +18,14 @@ const draftGrpcHost = ref('')
 const draftGrpcPort = ref('')
 const draftRestHost = ref('')
 const draftRestPort = ref('')
+const draftIndexName = ref('')
+const draftIndexEnabled = ref(true)
+const draftFulltextEnabled = ref(true)
+const draftVectorTextEnabled = ref(true)
+const draftVectorIndexName = ref('')
+const draftVectorModelName = ref('')
+const draftVectorChunkSize = ref(800)
+const draftVectorChunkOverlap = ref(100)
 const errorMsg = ref('')
 
 // 打开时载入当前设置
@@ -30,6 +38,14 @@ watch(
       draftGrpcPort.value = settings.grpcPort
       draftRestHost.value = settings.restHost
       draftRestPort.value = settings.restPort
+      draftIndexName.value = settings.indexName
+      draftIndexEnabled.value = settings.indexEnabled
+      draftFulltextEnabled.value = settings.fulltextEnabled
+      draftVectorTextEnabled.value = settings.vectorTextEnabled
+      draftVectorIndexName.value = settings.vectorIndexName
+      draftVectorModelName.value = settings.vectorModelName
+      draftVectorChunkSize.value = settings.vectorChunkSize
+      draftVectorChunkOverlap.value = settings.vectorChunkOverlap
       errorMsg.value = ''
     }
   }
@@ -57,12 +73,44 @@ function save() {
     errorMsg.value = 'REST 端口无效（1-65535）'
     return
   }
+  if (!draftIndexName.value.trim()) {
+    errorMsg.value = '索引名不能为空'
+    return
+  }
+  if (draftVectorTextEnabled.value && !draftVectorIndexName.value.trim()) {
+    errorMsg.value = '向量索引名不能为空'
+    return
+  }
+  if (draftVectorTextEnabled.value && !draftVectorModelName.value.trim()) {
+    errorMsg.value = '向量模型名不能为空'
+    return
+  }
+  if (!Number.isInteger(draftVectorChunkSize.value) || draftVectorChunkSize.value < 100 || draftVectorChunkSize.value > 10000) {
+    errorMsg.value = '分块长度需为 100-10000 的整数'
+    return
+  }
+  if (
+    !Number.isInteger(draftVectorChunkOverlap.value) ||
+    draftVectorChunkOverlap.value < 0 ||
+    draftVectorChunkOverlap.value >= draftVectorChunkSize.value
+  ) {
+    errorMsg.value = '重叠长度需为 0 到分块长度之间的整数'
+    return
+  }
 
   settings.indexProtocol = draftProtocol.value
   settings.grpcHost = draftGrpcHost.value.trim()
   settings.grpcPort = draftGrpcPort.value.trim()
   settings.restHost = draftRestHost.value.trim()
   settings.restPort = draftRestPort.value.trim()
+  settings.indexName = draftIndexName.value.trim()
+  settings.indexEnabled = draftIndexEnabled.value
+  settings.fulltextEnabled = draftFulltextEnabled.value
+  settings.vectorTextEnabled = draftVectorTextEnabled.value
+  settings.vectorIndexName = draftVectorIndexName.value.trim()
+  settings.vectorModelName = draftVectorModelName.value.trim()
+  settings.vectorChunkSize = draftVectorChunkSize.value
+  settings.vectorChunkOverlap = draftVectorChunkOverlap.value
   emit('close')
 }
 
@@ -80,9 +128,44 @@ function cancel() {
       </div>
 
       <div class="settings-body">
-        <div class="settings-section-title">全文检索服务（laoflchdb-rust）</div>
+        <div class="settings-section-title">索引配置</div>
 
         <div class="settings-field">
+          <div class="field-row">
+            <div class="field-label">启动索引服务</div>
+            <label class="switch" :class="{ on: draftIndexEnabled }">
+              <input v-model="draftIndexEnabled" type="checkbox" />
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+          <p class="field-hint">索引服务总开关，关闭后所有索引功能不可用</p>
+        </div>
+
+        <div class="settings-field" :class="{ dimmed: !draftIndexEnabled }">
+          <div class="field-row">
+            <div class="field-label">启动全文索引服务</div>
+            <label class="switch" :class="{ on: draftFulltextEnabled }">
+              <input v-model="draftFulltextEnabled" type="checkbox" :disabled="!draftIndexEnabled" />
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+          <p class="field-hint">关闭后全文索引（检索 / 生成索引 / 全文标签）功能关闭，为后续其它类型索引扩展预留</p>
+        </div>
+
+        <div class="settings-field" :class="{ dimmed: !draftIndexEnabled }">
+          <div class="field-row">
+            <div class="field-label">启动向量文本索引服务</div>
+            <label class="switch" :class="{ on: draftVectorTextEnabled }">
+              <input v-model="draftVectorTextEnabled" type="checkbox" :disabled="!draftIndexEnabled" />
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+          <p class="field-hint">关闭后向量文本索引（语义检索 / 生成向量索引 / 向量标签）功能关闭</p>
+        </div>
+
+        <div class="settings-section-title">全文检索服务（laoflchdb-rust）</div>
+
+        <div class="settings-field" :class="{ dimmed: draftProtocol !== 'grpc' || !draftIndexEnabled || !draftFulltextEnabled }">
           <div class="field-label">连接协议</div>
           <div class="radio-group">
             <label class="radio-option" :class="{ active: draftProtocol === 'grpc' }">
@@ -99,7 +182,7 @@ function cancel() {
           </p>
         </div>
 
-        <div class="settings-field" :class="{ dimmed: draftProtocol !== 'grpc' }">
+        <div class="settings-field" :class="{ dimmed: draftProtocol !== 'grpc' || !draftIndexEnabled || !draftFulltextEnabled }">
           <div class="field-label">gRPC 服务地址</div>
           <div class="input-row">
             <input
@@ -117,7 +200,7 @@ function cancel() {
           </div>
         </div>
 
-        <div class="settings-field" :class="{ dimmed: draftProtocol !== 'rest' }">
+        <div class="settings-field" :class="{ dimmed: draftProtocol !== 'rest' || !draftIndexEnabled || !draftFulltextEnabled }">
           <div class="field-label">REST 服务地址</div>
           <div class="input-row">
             <input
@@ -134,6 +217,61 @@ function cancel() {
             />
           </div>
         </div>
+
+        <div class="settings-field inline-field" :class="{ dimmed: !draftIndexEnabled || !draftFulltextEnabled }">
+          <div class="field-label">索引名</div>
+          <input
+            v-model="draftIndexName"
+            class="settings-input index-name"
+            placeholder="md_docs"
+          />
+        </div>
+        <p class="field-hint">全文检索使用的索引表名，默认 md_docs</p>
+
+        <div class="settings-section-title">向量文本索引服务（laoflchdb-rust, gRPC）</div>
+
+        <div class="settings-field inline-field" :class="{ dimmed: !draftIndexEnabled || !draftVectorTextEnabled }">
+          <div class="field-label">向量索引名</div>
+          <input
+            v-model="draftVectorIndexName"
+            class="settings-input index-name"
+            placeholder="text_md"
+          />
+        </div>
+        <p class="field-hint">向量索引名，需在服务端 laoflchdb.yaml 的 embedding_index.indices 中预定义</p>
+
+        <div class="settings-field inline-field" :class="{ dimmed: !draftIndexEnabled || !draftVectorTextEnabled }">
+          <div class="field-label">向量模型名</div>
+          <input
+            v-model="draftVectorModelName"
+            class="settings-input index-name"
+            placeholder="bge-m3"
+          />
+        </div>
+        <p class="field-hint">生成文本向量的模型名，默认 bge-m3</p>
+
+        <div class="settings-field inline-field" :class="{ dimmed: !draftIndexEnabled || !draftVectorTextEnabled }">
+          <div class="field-label">分块长度</div>
+          <input
+            v-model.number="draftVectorChunkSize"
+            class="settings-input num-input"
+            type="number"
+            min="100"
+            max="10000"
+          />
+        </div>
+        <p class="field-hint">文档按此字符数分块，每块一条向量，默认 800</p>
+
+        <div class="settings-field inline-field" :class="{ dimmed: !draftIndexEnabled || !draftVectorTextEnabled }">
+          <div class="field-label">重叠长度</div>
+          <input
+            v-model.number="draftVectorChunkOverlap"
+            class="settings-input num-input"
+            type="number"
+            min="0"
+          />
+        </div>
+        <p class="field-hint">相邻分块之间的重叠字符数，保留跨块语义，默认 100</p>
 
         <p v-if="errorMsg" class="settings-error">{{ errorMsg }}</p>
       </div>
@@ -218,6 +356,67 @@ function cancel() {
   margin-bottom: 16px;
 }
 
+.field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.field-row .field-label {
+  margin-bottom: 0;
+}
+
+/* 开关（el-switch 风格，激活绿色） */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch-slider {
+  position: absolute;
+  inset: 0;
+  background: #dcdfe6;
+  border-radius: 10px;
+  transition: background 0.2s;
+  cursor: pointer;
+}
+
+.switch-slider::before {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  left: 2px;
+  top: 2px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.switch.on .switch-slider {
+  background: #67c23a;
+}
+
+.switch.on .switch-slider::before {
+  transform: translateX(20px);
+}
+
+.switch input:disabled + .switch-slider {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .settings-field.dimmed {
   opacity: 0.5;
 }
@@ -227,6 +426,27 @@ function cancel() {
   font-weight: 500;
   color: var(--text-primary);
   margin-bottom: 6px;
+}
+
+/* 标签与输入框同行、向两边对齐 */
+.inline-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.inline-field .field-label {
+  margin-bottom: 0;
+  flex: none;
+}
+
+.inline-field .settings-input.index-name {
+  width: 180px;
+}
+
+.inline-field .settings-input.num-input {
+  width: 120px;
+  text-align: right;
 }
 
 .field-hint {

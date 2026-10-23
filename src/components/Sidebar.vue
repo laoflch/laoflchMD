@@ -4,9 +4,8 @@ import { useDragDivider } from '../composables/useDragDivider'
 import FileTree from './FileTree.vue'
 import S3Browser from './S3Browser.vue'
 import Outline from './Outline.vue'
-import SearchPanel from './SearchPanel.vue'
 
-export type SidebarTab = 'files' | 's3' | 'search' | 'outline'
+export type SidebarTab = 'files' | 's3' | 'outline'
 
 const props = defineProps<{ modelValue: SidebarTab }>()
 const emit = defineEmits<{
@@ -78,17 +77,6 @@ const { isDragging, startDrag } = useDragDivider({
       </button>
       <button
         class="sidebar-tab"
-        :class="{ active: modelValue === 'search' }"
-        @click="switchTab('search')"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="11" cy="11" r="7"/>
-          <path d="m21 21-4.35-4.35"/>
-        </svg>
-        <span>全文检索</span>
-      </button>
-      <button
-        class="sidebar-tab"
         :class="{ active: modelValue === 'outline' }"
         @click="switchTab('outline')"
       >
@@ -107,7 +95,6 @@ const { isDragging, startDrag } = useDragDivider({
     <div class="sidebar-body">
       <FileTree v-show="modelValue === 'files'" />
       <S3Browser v-show="modelValue === 's3'" />
-      <SearchPanel v-show="modelValue === 'search'" />
       <Outline v-show="modelValue === 'outline'" />
     </div>
     <div class="sidebar-footer">

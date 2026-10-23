@@ -1,20 +1,59 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, watch, ref } from 'vue'
 import { useEditorStore } from './stores/editor'
+import { useToastStore } from './stores/toast'
+import { useSettingsStore } from './stores/settings'
 import { useFindReplace } from './composables/useFindReplace'
+import { useDragDivider } from './composables/useDragDivider'
 import TitleBar from './components/TitleBar.vue'
 import Toolbar from './components/Toolbar.vue'
 import Editor from './components/Editor.vue'
 import Sidebar, { type SidebarTab } from './components/Sidebar.vue'
+import SearchPanel from './components/SearchPanel.vue'
 import AboutDialog from './components/AboutDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 
 const store = useEditorStore()
 const findReplace = useFindReplace()
+const settings = useSettingsStore()
+const toastStore = useToastStore()
 const showSidebar = ref(false)
 const sidebarTab = ref<SidebarTab>('files')
+const searchOpen = ref(false)
 const showAbout = ref(false)
 const showSettings = ref(false)
+
+// 索引右侧边栏宽度（可拖拽调整，持久化）
+const DRAWER_WIDTH_KEY = 'laoflchmd.search.width'
+const DRAWER_MIN = 260
+const DRAWER_MAX = 700
+let drawerStartWidth = 420
+const drawerWidth = ref(420)
+if (typeof localStorage !== 'undefined') {
+  const saved = Number(localStorage.getItem(DRAWER_WIDTH_KEY))
+  if (saved >= DRAWER_MIN && saved <= DRAWER_MAX) {
+    drawerWidth.value = saved
+  }
+}
+const { isDragging: drawerDragging, startDrag: startDrawerDrag } = useDragDivider({
+  onDragStart: () => {
+    drawerStartWidth = drawerWidth.value
+  },
+  onDragMove: (deltaX) => {
+    drawerWidth.value = Math.max(DRAWER_MIN, Math.min(DRAWER_MAX, drawerStartWidth - deltaX))
+  },
+  onDragEnd: () => {
+    localStorage.setItem(DRAWER_WIDTH_KEY, String(drawerWidth.value))
+  }
+})
+
+// 索引服务总开关关闭时，关闭右侧索引弹出栏
+watch(
+  () => settings.indexEnabled,
+  (enabled) => {
+    if (!enabled) searchOpen.value = false
+  }
+)
 
 // Listen for menu events from Electron main process
 const cleanupFns: (() => void)[] = []
@@ -112,10 +151,16 @@ function onGlobalKeydown(e: KeyboardEvent) {
     findReplace.openReplace()
     return
   }
-  // Esc — 关闭查找替换
-  if (e.key === 'Escape' && findReplace.isOpen.value) {
-    e.preventDefault()
-    findReplace.close()
+  // Esc — 关闭查找替换 / 索引弹出栏
+  if (e.key === 'Escape') {
+    if (searchOpen.value) {
+      searchOpen.value = false
+      return
+    }
+    if (findReplace.isOpen.value) {
+      e.preventDefault()
+      findReplace.close()
+    }
   }
 }
 
@@ -137,7 +182,13 @@ watch(() => store.fileName, (name) => {
 <template>
   <div class="app" :class="{ 'dark-theme': store.isDarkTheme }">
     <TitleBar />
-    <Toolbar @toggle-sidebar="toggleSidebar" :show-sidebar="showSidebar" @about="showAbout = true" />
+    <Toolbar
+      @toggle-sidebar="toggleSidebar"
+      :show-sidebar="showSidebar"
+      :show-search="searchOpen"
+      @toggle-search="searchOpen = !searchOpen"
+      @about="showAbout = true"
+    />
     <div class="main-content">
       <transition name="sidebar">
         <Sidebar
@@ -151,6 +202,42 @@ watch(() => store.fileName, (name) => {
     </div>
     <AboutDialog :open="showAbout" @close="showAbout = false" />
     <SettingsDialog :open="showSettings" @close="showSettings = false" />
+
+    <!-- 索引右侧边栏：位于子工具栏之下、底部状态栏之上，不覆盖两者；左侧可拖拽调整宽度 -->
+    <Transition name="search-drawer">
+      <div v-if="searchOpen" class="search-drawer" :style="{ width: drawerWidth + 'px' }">
+        <div
+          class="search-drawer-resizer"
+          :class="{ dragging: drawerDragging }"
+          title="拖动调整宽度"
+          @mousedown="startDrawerDrag"
+        ></div>
+        <div class="search-drawer-header">
+          <span class="search-drawer-title">索引</span>
+          <button class="search-drawer-close" title="关闭" @click="searchOpen = false">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M4 4l8 8M12 4l-8 8"/>
+            </svg>
+          </button>
+        </div>
+        <SearchPanel />
+      </div>
+    </Transition>
+
+    <!-- 右上角全局提示 -->
+    <div class="toast-host">
+      <transition-group name="toast">
+        <div
+          v-for="t in toastStore.toasts"
+          :key="t.id"
+          class="toast-item"
+          :class="t.type"
+          @click="toastStore.removeToast(t.id)"
+        >
+          {{ t.text }}
+        </div>
+      </transition-group>
+    </div>
   </div>
 </template>
 
@@ -279,5 +366,134 @@ html, body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-muted);
+}
+
+/* 右上角全局提示（toast） */
+.toast-host {
+  position: fixed;
+  top: 92px;
+  right: 20px;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 320px;
+  pointer-events: none;
+}
+
+.toast-item {
+  pointer-events: auto;
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  word-break: break-all;
+  white-space: normal;
+}
+
+.toast-item.ok {
+  background: var(--bg-primary);
+  color: #28a745;
+  border: 1px solid rgba(40, 167, 69, 0.5);
+}
+
+.toast-item.err {
+  background: var(--bg-primary);
+  color: #dc3545;
+  border: 1px solid rgba(220, 53, 69, 0.5);
+}
+
+.toast-item.progress {
+  background: var(--bg-primary);
+  color: var(--accent-color);
+  border: 1px solid rgba(74, 144, 217, 0.5);
+}
+
+.toast-enter-active,
+.toast-leave-active {
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.toast-enter-from,
+.toast-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+/* 索引右侧边栏：位于子工具栏（TitleBar 36px + Toolbar 42px）之下、底部状态栏（38px）之上 */
+.search-drawer {
+  position: fixed;
+  top: 78px;
+  bottom: 38px;
+  right: 0;
+  width: 420px;
+  max-width: 90vw;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-sidebar);
+  border-left: 1px solid var(--border-color);
+  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.2);
+  z-index: 1200;
+}
+
+.search-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+
+/* 左侧拖拽调整宽度手柄 */
+.search-drawer-resizer {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 5;
+}
+
+.search-drawer-resizer:hover,
+.search-drawer-resizer.dragging {
+  background: var(--accent-color);
+}
+
+.search-drawer-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.search-drawer-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+
+.search-drawer-close:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.search-drawer-enter-active,
+.search-drawer-leave-active {
+  transition: transform 0.2s ease;
+}
+
+.search-drawer-enter-from,
+.search-drawer-leave-to {
+  transform: translateX(100%);
 }
 </style>

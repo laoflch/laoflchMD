@@ -52,16 +52,21 @@ declare global {
       s3PutObject: (config: S3Config, bucket: string, key: string, content: string) => Promise<void>
       s3DeleteObject: (config: S3Config, bucket: string, key: string) => Promise<boolean>
 
+      // 本机主机名
+      getHostname: () => Promise<string>
+
       // Full-text search (laoflchdb-rust)
       indexEnsure: (
         protocol: IndexProtocol,
         host: string,
-        port: string
+        port: string,
+        indexName: string
       ) => Promise<{ ok: boolean; message: string; created: boolean }>
       indexSearch: (
         protocol: IndexProtocol,
         host: string,
         port: string,
+        indexName: string,
         query: string,
         limit?: number
       ) => Promise<{ ok: boolean; message: string; results: IndexSearchResult[] }>
@@ -69,18 +74,21 @@ declare global {
         protocol: IndexProtocol,
         host: string,
         port: string,
+        indexName: string,
         filePath: string
       ) => Promise<{ ok: boolean; message: string; docId?: string }>
       indexDir: (
         protocol: IndexProtocol,
         host: string,
         port: string,
+        indexName: string,
         dirPath: string
       ) => Promise<{ ok: boolean; message: string; count: number }>
       indexS3File: (
         protocol: IndexProtocol,
         host: string,
         port: string,
+        indexName: string,
         config: S3Config,
         bucket: string,
         key: string
@@ -89,15 +97,109 @@ declare global {
         protocol: IndexProtocol,
         host: string,
         port: string,
+        indexName: string,
         paths: string[]
       ) => Promise<{ ok: boolean; message: string; results: Record<string, boolean> }>
+      indexCheckS3Files: (
+        protocol: IndexProtocol,
+        host: string,
+        port: string,
+        indexName: string,
+        config: S3Config,
+        bucket: string,
+        keys: string[]
+      ) => Promise<{ ok: boolean; message: string; results: Record<string, boolean> }>
+      indexGetDoc: (
+        protocol: IndexProtocol,
+        host: string,
+        port: string,
+        indexName: string,
+        kind: 'local' | 's3',
+        path: string,
+        config?: S3Config,
+        bucket?: string,
+        key?: string
+      ) => Promise<{ ok: boolean; message: string; doc: IndexSearchResult | null }>
       indexDeleteDoc: (
         protocol: IndexProtocol,
         host: string,
         port: string,
+        indexName: string,
         docId: string,
         fields?: Record<string, string>
       ) => Promise<{ ok: boolean; message: string }>
+      onIndexProgress: (
+        callback: (progress: IndexProgress) => void
+      ) => () => void
+
+      // Vector text index (laoflchdb-rust, gRPC)
+      vectorGetInfo: (
+        host: string,
+        port: string,
+        indexName: string
+      ) => Promise<{ ok: boolean; message: string; stats: VectorIndexStats | null }>
+      vectorIndexLocal: (
+        host: string,
+        port: string,
+        indexName: string,
+        modelName: string,
+        filePath: string,
+        chunkSize?: number,
+        overlap?: number
+      ) => Promise<{ ok: boolean; message: string; count: number }>
+      vectorIndexDir: (
+        host: string,
+        port: string,
+        indexName: string,
+        modelName: string,
+        dirPath: string,
+        chunkSize?: number,
+        overlap?: number
+      ) => Promise<{ ok: boolean; message: string; count: number }>
+      vectorIndexS3: (
+        host: string,
+        port: string,
+        indexName: string,
+        modelName: string,
+        config: S3Config,
+        bucket: string,
+        key: string,
+        chunkSize?: number,
+        overlap?: number
+      ) => Promise<{ ok: boolean; message: string; count: number }>
+      vectorSearch: (
+        host: string,
+        port: string,
+        indexName: string,
+        modelName: string,
+        query: string,
+        topK?: number
+      ) => Promise<{ ok: boolean; message: string; results: VectorSearchResult[] }>
+      vectorDeleteFile: (
+        host: string,
+        port: string,
+        indexName: string,
+        kind: 'local' | 's3',
+        path: string,
+        config?: S3Config,
+        bucket?: string,
+        key?: string
+      ) => Promise<{ ok: boolean; message: string }>
+      vectorDeleteId: (
+        host: string,
+        port: string,
+        indexName: string,
+        id: string | number
+      ) => Promise<{ ok: boolean; message: string }>
+      vectorCheckFiles: (paths: string[]) => Promise<{ ok: boolean; message: string; results: Record<string, boolean> }>
+      vectorCheckS3Files: (
+        config: S3Config,
+        bucket: string,
+        keys: string[]
+      ) => Promise<{ ok: boolean; message: string; results: Record<string, boolean> }>
+      onVectorProgress: (
+        callback: (progress: IndexProgress) => void
+      ) => () => void
     }
   }
 }
@@ -140,6 +242,24 @@ export interface VersionNote {
 export type IndexProtocol = 'grpc' | 'rest'
 
 export interface IndexSearchResult {
+  docId: string
+  score: number
+  fields: Record<string, string>
+}
+
+export interface IndexProgress {
+  done: number
+  total: number
+  fileName: string
+}
+
+export interface VectorIndexStats {
+  numElements: number
+  dim: number
+  name: string
+}
+
+export interface VectorSearchResult {
   docId: string
   score: number
   fields: Record<string, string>

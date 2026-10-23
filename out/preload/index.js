@@ -79,12 +79,37 @@ electron.contextBridge.exposeInMainWorld("api", {
   s3GetObject: (config, bucket, key) => electron.ipcRenderer.invoke("s3:getObject", config, bucket, key),
   s3PutObject: (config, bucket, key, content) => electron.ipcRenderer.invoke("s3:putObject", config, bucket, key, content),
   s3DeleteObject: (config, bucket, key) => electron.ipcRenderer.invoke("s3:deleteObject", config, bucket, key),
+  // 本机主机名
+  getHostname: () => electron.ipcRenderer.invoke("app:hostname"),
   // Full-text search (laoflchdb-rust)
-  indexEnsure: (protocol, host, port) => electron.ipcRenderer.invoke("index:ensure", protocol, host, port),
-  indexSearch: (protocol, host, port, query, limit) => electron.ipcRenderer.invoke("index:search", protocol, host, port, query, limit),
-  indexLocalFile: (protocol, host, port, filePath) => electron.ipcRenderer.invoke("index:indexLocal", protocol, host, port, filePath),
-  indexDir: (protocol, host, port, dirPath) => electron.ipcRenderer.invoke("index:indexDir", protocol, host, port, dirPath),
-  indexS3File: (protocol, host, port, config, bucket, key) => electron.ipcRenderer.invoke("index:indexS3", protocol, host, port, config, bucket, key),
-  indexCheckFiles: (protocol, host, port, paths) => electron.ipcRenderer.invoke("index:checkFiles", protocol, host, port, paths),
-  indexDeleteDoc: (protocol, host, port, docId, fields) => electron.ipcRenderer.invoke("index:deleteDoc", protocol, host, port, docId, fields)
+  indexEnsure: (protocol, host, port, indexName) => electron.ipcRenderer.invoke("index:ensure", protocol, host, port, indexName),
+  indexSearch: (protocol, host, port, indexName, query, limit) => electron.ipcRenderer.invoke("index:search", protocol, host, port, indexName, query, limit),
+  indexLocalFile: (protocol, host, port, indexName, filePath) => electron.ipcRenderer.invoke("index:indexLocal", protocol, host, port, indexName, filePath),
+  indexDir: (protocol, host, port, indexName, dirPath) => electron.ipcRenderer.invoke("index:indexDir", protocol, host, port, indexName, dirPath),
+  indexS3File: (protocol, host, port, indexName, config, bucket, key) => electron.ipcRenderer.invoke("index:indexS3", protocol, host, port, indexName, config, bucket, key),
+  indexCheckFiles: (protocol, host, port, indexName, paths) => electron.ipcRenderer.invoke("index:checkFiles", protocol, host, port, indexName, paths),
+  indexCheckS3Files: (protocol, host, port, indexName, config, bucket, keys) => electron.ipcRenderer.invoke("index:checkS3Files", protocol, host, port, indexName, config, bucket, keys),
+  indexGetDoc: (protocol, host, port, indexName, kind, path, config, bucket, key) => electron.ipcRenderer.invoke("index:getDoc", protocol, host, port, indexName, kind, path, config, bucket, key),
+  indexDeleteDoc: (protocol, host, port, indexName, docId, fields) => electron.ipcRenderer.invoke("index:deleteDoc", protocol, host, port, indexName, docId, fields),
+  // 目录建索引进度事件（主进程逐文件推送）
+  onIndexProgress: (callback) => {
+    const handler = (_event, progress) => callback(progress);
+    electron.ipcRenderer.on("index:progress", handler);
+    return () => electron.ipcRenderer.removeListener("index:progress", handler);
+  },
+  // Vector text index (laoflchdb-rust, gRPC)
+  vectorGetInfo: (host, port, indexName) => electron.ipcRenderer.invoke("vector:getInfo", host, port, indexName),
+  vectorIndexLocal: (host, port, indexName, modelName, filePath, chunkSize, overlap) => electron.ipcRenderer.invoke("vector:indexLocal", host, port, indexName, modelName, filePath, chunkSize, overlap),
+  vectorIndexDir: (host, port, indexName, modelName, dirPath, chunkSize, overlap) => electron.ipcRenderer.invoke("vector:indexDir", host, port, indexName, modelName, dirPath, chunkSize, overlap),
+  vectorIndexS3: (host, port, indexName, modelName, config, bucket, key, chunkSize, overlap) => electron.ipcRenderer.invoke("vector:indexS3", host, port, indexName, modelName, config, bucket, key, chunkSize, overlap),
+  vectorSearch: (host, port, indexName, modelName, query, topK) => electron.ipcRenderer.invoke("vector:search", host, port, indexName, modelName, query, topK),
+  vectorDeleteFile: (host, port, indexName, kind, path, config, bucket, key) => electron.ipcRenderer.invoke("vector:deleteFile", host, port, indexName, kind, path, config, bucket, key),
+  vectorDeleteId: (host, port, indexName, id) => electron.ipcRenderer.invoke("vector:deleteId", host, port, indexName, id),
+  vectorCheckFiles: (paths) => electron.ipcRenderer.invoke("vector:checkFiles", paths),
+  vectorCheckS3Files: (config, bucket, keys) => electron.ipcRenderer.invoke("vector:checkS3Files", config, bucket, keys),
+  onVectorProgress: (callback) => {
+    const handler = (_event, progress) => callback(progress);
+    electron.ipcRenderer.on("vector:progress", handler);
+    return () => electron.ipcRenderer.removeListener("vector:progress", handler);
+  }
 });

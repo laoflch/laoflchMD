@@ -1,21 +1,40 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useSettingsStore } from '../stores/settings'
 import { useEditorStore } from '../stores/editor'
 import { useS3Store } from '../stores/s3'
-import type { IndexSearchResult } from '../types'
+import { useToastStore } from '../stores/toast'
+import type { IndexSearchResult, VectorSearchResult, VectorIndexStats } from '../types'
 
 const settings = useSettingsStore()
 const editor = useEditorStore()
 const s3 = useS3Store()
+const toastStore = useToastStore()
 
 const query = ref('')
-const results = ref<IndexSearchResult[]>([])
-const searching = ref(false)
-const searched = ref(false)
-const error = ref<string | null>(null)
+// 当前激活的索引类型 tab
+const activeIndexTab = ref<'fulltext' | 'vector'>('fulltext')
+// 搜索范围：两个都检索 / 只检索全文 / 只检索向量
+const searchMode = ref<'all' | 'fulltext' | 'vector'>('all')
+
+// 全文索引状态
+const fulltextResults = ref<IndexSearchResult[]>([])
+const fulltextSearching = ref(false)
+const fulltextSearched = ref(false)
+const fulltextError = ref<string | null>(null)
 const checking = ref(false)
 const indexMessage = ref<string | null>(null)
+
+// 向量索引状态
+const vectorResults = ref<VectorSearchResult[]>([])
+const vectorSearching = ref(false)
+const vectorSearched = ref(false)
+const vectorError = ref<string | null>(null)
+const vectorChecking = ref(false)
+const vectorInfo = ref<VectorIndexStats | null>(null)
+const vectorInfoMessage = ref<string | null>(null)
+
+const searching = computed(() => fulltextSearching.value || vectorSearching.value)
 
 const host = computed(() =>
   settings.indexProtocol === 'grpc' ? settings.grpcHost : settings.restHost
@@ -25,56 +44,146 @@ const port = computed(() =>
 )
 const protocolLabel = computed(() => (settings.indexProtocol === 'grpc' ? 'gRPC' : 'REST'))
 
+// 全文索引功能是否关闭（索引服务总开关 / 全文索引子开关）
+const fulltextOff = computed(() => !settings.indexEnabled || !settings.fulltextEnabled)
+// 向量索引功能是否关闭（索引服务总开关 / 向量文本索引子开关）
+const vectorOff = computed(() => !settings.indexEnabled || !settings.vectorTextEnabled)
+const bothOff = computed(() => fulltextOff.value && vectorOff.value)
+const disabledHint = computed(() =>
+  settings.indexEnabled
+    ? '全文索引与向量索引服务均已关闭，请在全局设置中启用'
+    : '索引服务已关闭，请在全局设置中启用'
+)
+
+// 实际生效的搜索范围（被关闭的索引自动排除）
+const effectiveMode = computed<'all' | 'fulltext' | 'vector'>(() => {
+  if (searchMode.value === 'all') {
+    if (fulltextOff.value && !vectorOff.value) return 'vector'
+    if (vectorOff.value && !fulltextOff.value) return 'fulltext'
+    return 'all'
+  }
+  if (searchMode.value === 'fulltext' && fulltextOff.value) return 'vector'
+  if (searchMode.value === 'vector' && vectorOff.value) return 'fulltext'
+  return searchMode.value
+})
+
 async function ensureIndex() {
   checking.value = true
-  error.value = null
+  fulltextError.value = null
   indexMessage.value = null
   try {
-    const res = await window.api.indexEnsure(settings.indexProtocol, host.value, port.value)
-    indexMessage.value = res.message
+    const res = await window.api.indexEnsure(settings.indexProtocol, host.value, port.value, settings.indexName)
+    if (res.ok) {
+      // 索引 md_docs 已存在等消息移到右上角，绿色提示，8 秒后移除
+      indexMessage.value = res.message
+      toastStore.pushToast('ok', res.message, true, 8000)
+    } else {
+      fulltextError.value = res.message
+    }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '连接索引服务失败'
+    fulltextError.value = e instanceof Error ? e.message : '连接索引服务失败'
   } finally {
     checking.value = false
+  }
+}
+
+async function checkVectorIndex() {
+  vectorChecking.value = true
+  vectorError.value = null
+  vectorInfoMessage.value = null
+  try {
+    const res = await window.api.vectorGetInfo(settings.grpcHost, settings.grpcPort, settings.vectorIndexName)
+    if (res.ok) {
+      vectorInfo.value = res.stats
+      if (res.stats) {
+        vectorInfoMessage.value = `索引 ${res.stats.name} 已就绪：${res.stats.numElements} 条向量，维度 ${res.stats.dim}`
+      } else {
+        vectorInfoMessage.value = '索引检查通过'
+      }
+      toastStore.pushToast('ok', vectorInfoMessage.value, true, 8000)
+    } else {
+      vectorInfo.value = null
+      vectorError.value = res.message
+    }
+  } catch (e: unknown) {
+    vectorInfo.value = null
+    vectorError.value = e instanceof Error ? e.message : '连接向量服务失败'
+  } finally {
+    vectorChecking.value = false
+  }
+}
+
+async function searchFulltext(q: string) {
+  fulltextSearching.value = true
+  fulltextSearched.value = true
+  fulltextError.value = null
+  try {
+    const res = await window.api.indexSearch(settings.indexProtocol, host.value, port.value, settings.indexName, q, 30)
+    if (res.ok) {
+      fulltextResults.value = res.results
+    } else {
+      fulltextError.value = res.message
+      fulltextResults.value = []
+    }
+  } catch (e: unknown) {
+    fulltextError.value = e instanceof Error ? e.message : '全文搜索失败'
+    fulltextResults.value = []
+  } finally {
+    fulltextSearching.value = false
+  }
+}
+
+async function searchVector(q: string) {
+  vectorSearching.value = true
+  vectorSearched.value = true
+  vectorError.value = null
+  try {
+    const res = await window.api.vectorSearch(
+      settings.grpcHost,
+      settings.grpcPort,
+      settings.vectorIndexName,
+      settings.vectorModelName,
+      q,
+      30
+    )
+    if (res.ok) {
+      vectorResults.value = res.results
+    } else {
+      vectorError.value = res.message
+      vectorResults.value = []
+    }
+  } catch (e: unknown) {
+    vectorError.value = e instanceof Error ? e.message : '向量搜索失败'
+    vectorResults.value = []
+  } finally {
+    vectorSearching.value = false
   }
 }
 
 async function doSearch() {
   const q = query.value.trim()
   if (!q) return
-  searching.value = true
-  searched.value = true
-  error.value = null
-  try {
-    const res = await window.api.indexSearch(settings.indexProtocol, host.value, port.value, q, 30)
-    if (res.ok) {
-      results.value = res.results
-    } else {
-      error.value = res.message
-      results.value = []
-    }
-  } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '搜索失败'
-    results.value = []
-  } finally {
-    searching.value = false
-  }
+  const mode = effectiveMode.value
+  const tasks: Promise<void>[] = []
+  if (mode === 'fulltext' || mode === 'all') tasks.push(searchFulltext(q))
+  if (mode === 'vector' || mode === 'all') tasks.push(searchVector(q))
+  await Promise.all(tasks)
 }
 
-function kindOf(r: IndexSearchResult): 'local' | 's3' {
+function kindOf(r: IndexSearchResult | VectorSearchResult): 'local' | 's3' {
   return r.fields?.kind === 's3' ? 's3' : 'local'
 }
 
-function titleOf(r: IndexSearchResult): string {
+function titleOf(r: IndexSearchResult | VectorSearchResult): string {
   return r.fields?.title || r.fields?.path || r.fields?.doc_id || r.docId
 }
 
-function pathOf(r: IndexSearchResult): string {
+function pathOf(r: IndexSearchResult | VectorSearchResult): string {
   return r.fields?.path || r.fields?.doc_id || r.docId
 }
 
-function snippetOf(r: IndexSearchResult): string {
-  const content = r.fields?.content || ''
+function snippetOf(r: IndexSearchResult | VectorSearchResult): string {
+  const content = r.fields?.content || r.fields?.snippet || ''
   const q = query.value.trim()
   if (q && content) {
     const idx = content.toLowerCase().indexOf(q.toLowerCase())
@@ -91,7 +200,7 @@ function snippetOf(r: IndexSearchResult): string {
   return content ? content.slice(0, 100).replace(/\s+/g, ' ') : '（无内容）'
 }
 
-async function openResult(r: IndexSearchResult) {
+async function openResult(r: IndexSearchResult | VectorSearchResult) {
   const fields = r.fields || {}
   const kind = kindOf(r)
   try {
@@ -100,58 +209,71 @@ async function openResult(r: IndexSearchResult) {
       if (content !== null) {
         editor.loadFile(content, fields.key, { bucket: fields.bucket, key: fields.key })
       } else {
-        error.value = '无法读取 S3 对象（连接配置可能已变更）'
+        (activeIndexTab.value === 'vector' ? vectorError : fulltextError).value = '无法读取 S3 对象（连接配置可能已变更）'
       }
     } else if (kind === 'local' && fields.path) {
       const content = await window.api.readFile(fields.path)
       if (content !== null) {
         editor.loadFile(content, fields.path, null)
       } else {
-        error.value = '文件不存在或无法读取'
+        (activeIndexTab.value === 'vector' ? vectorError : fulltextError).value = '文件不存在或无法读取'
       }
     } else {
-      error.value = '该结果缺少文件定位信息，无法打开'
+      (activeIndexTab.value === 'vector' ? vectorError : fulltextError).value = '该结果缺少文件定位信息，无法打开'
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '打开文件失败'
+    (activeIndexTab.value === 'vector' ? vectorError : fulltextError).value =
+      e instanceof Error ? e.message : '打开文件失败'
   }
 }
 
-// 删除索引文档（右上角关闭按钮）
-const deletingDocId = ref<string | null>(null)
-const confirmTarget = ref<IndexSearchResult | null>(null)
+// 删除索引条目（右上角关闭按钮）
+const deletingId = ref<string | null>(null)
+const confirmTarget = ref<{ tab: 'fulltext' | 'vector'; item: IndexSearchResult | VectorSearchResult } | null>(null)
 const notice = ref<string | null>(null)
 let noticeTimer: ReturnType<typeof setTimeout> | null = null
 
-function confirmDelete(r: IndexSearchResult) {
-  if (deletingDocId.value) return
-  confirmTarget.value = r
+function confirmDelete(tab: 'fulltext' | 'vector', item: IndexSearchResult | VectorSearchResult) {
+  if (deletingId.value) return
+  confirmTarget.value = { tab, item }
 }
 
 async function doDelete() {
-  const r = confirmTarget.value
-  if (!r || deletingDocId.value) return
+  const target = confirmTarget.value
+  if (!target || deletingId.value) return
   confirmTarget.value = null
-  deletingDocId.value = r.docId
-  error.value = null
+  deletingId.value = target.item.docId
+  if (target.tab === 'vector') vectorError.value = null
+  else fulltextError.value = null
   try {
-    const res = await window.api.indexDeleteDoc(
-      settings.indexProtocol,
-      host.value,
-      port.value,
-      r.docId,
-      { ...r.fields } // 展开为普通对象，避免 Vue reactive Proxy 无法通过 IPC 克隆
-    )
+    const res =
+      target.tab === 'vector'
+        ? await window.api.vectorDeleteId(settings.grpcHost, settings.grpcPort, settings.vectorIndexName, target.item.docId)
+        : await window.api.indexDeleteDoc(
+            settings.indexProtocol,
+            host.value,
+            port.value,
+            settings.indexName,
+            target.item.docId,
+            { ...target.item.fields } // 展开为普通对象，避免 Vue reactive Proxy 无法通过 IPC 克隆
+          )
     if (res.ok) {
-      results.value = results.value.filter((item) => item.docId !== r.docId)
-      showNotice(`删除成功：已从索引中移除「${titleOf(r)}」`)
+      if (target.tab === 'vector') {
+        vectorResults.value = vectorResults.value.filter((item) => item.docId !== target.item.docId)
+      } else {
+        fulltextResults.value = fulltextResults.value.filter((item) => item.docId !== target.item.docId)
+      }
+      showNotice(`删除成功：已从索引中移除「${titleOf(target.item)}」`)
     } else {
-      error.value = res.message
+      if (target.tab === 'vector') vectorError.value = res.message
+      else fulltextError.value = res.message
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '删除索引文档失败'
+    const msg = e instanceof Error ? e.message : '删除索引条目失败'
+    if (target.tab === 'vector') vectorError.value = msg
+    else fulltextError.value = msg
   } finally {
-    deletingDocId.value = null
+    deletingId.value = null
   }
 }
 
@@ -164,74 +286,167 @@ function showNotice(msg: string) {
 }
 
 onMounted(() => {
-  ensureIndex()
+  if (!fulltextOff.value) ensureIndex()
+  if (!vectorOff.value) checkVectorIndex()
+})
+
+// 全文索引开关变化时同步刷新：关闭清空面板，重新打开时重新检查索引
+watch(fulltextOff, (off) => {
+  if (off) {
+    fulltextResults.value = []
+    fulltextError.value = null
+    fulltextSearched.value = false
+    if (activeIndexTab.value === 'fulltext') activeIndexTab.value = 'vector'
+  } else {
+    ensureIndex()
+  }
+})
+
+// 向量索引开关变化时同步刷新
+watch(vectorOff, (off) => {
+  if (off) {
+    vectorResults.value = []
+    vectorError.value = null
+    vectorSearched.value = false
+    vectorInfo.value = null
+    if (activeIndexTab.value === 'vector') activeIndexTab.value = 'fulltext'
+  } else {
+    checkVectorIndex()
+  }
 })
 </script>
 
 <template>
   <div class="search-panel">
-    <div class="search-header">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="11" cy="11" r="7"/>
-        <path d="m21 21-4.35-4.35"/>
-      </svg>
-      <span>全文检索</span>
-    </div>
-
     <div class="search-bar">
+      <select v-model="searchMode" class="mode-select" :disabled="bothOff" :title="'选择检索范围'">
+        <option value="all" :disabled="fulltextOff || vectorOff">全文+向量</option>
+        <option value="fulltext" :disabled="fulltextOff">全文</option>
+        <option value="vector" :disabled="vectorOff">向量</option>
+      </select>
       <input
         v-model="query"
         type="text"
         placeholder="搜索 Markdown 文档内容..."
         spellcheck="false"
+        :disabled="bothOff"
         @keydown.enter="doSearch"
       />
-      <button class="search-btn" :disabled="searching || !query.trim()" @click="doSearch">
+      <button class="search-btn" :disabled="searching || !query.trim() || bothOff" @click="doSearch">
         {{ searching ? '搜索中' : '搜索' }}
       </button>
     </div>
 
-    <div class="search-status">
-      <span class="status-dot" :class="checking ? 'checking' : indexMessage ? 'ok' : 'err'"></span>
-      <span class="status-text">{{ protocolLabel }} {{ host }}:{{ port }}</span>
-      <button class="check-btn" :disabled="checking" @click="ensureIndex">
-        {{ checking ? '检查中' : '检查索引' }}
-      </button>
+    <!-- 索引类型 tab 条：全文索引与向量索引并列 -->
+    <div v-if="!bothOff" class="index-tabs">
+      <div
+        v-if="!fulltextOff"
+        class="index-tab"
+        :class="{ active: activeIndexTab === 'fulltext' }"
+        @click="activeIndexTab = 'fulltext'"
+      >全文索引</div>
+      <div
+        v-if="!vectorOff"
+        class="index-tab"
+        :class="{ active: activeIndexTab === 'vector' }"
+        @click="activeIndexTab = 'vector'"
+      >向量索引</div>
     </div>
 
-    <div v-if="indexMessage" class="index-msg">{{ indexMessage }}</div>
-    <div v-if="notice" class="search-notice">{{ notice }}</div>
-    <div v-if="error" class="search-error">{{ error }}</div>
-    <div v-if="searching" class="search-loading">
-      <span class="loading-spinner"></span>
-      搜索中...
-    </div>
+    <div class="index-tab-pane">
+      <div v-if="bothOff" class="search-disabled">{{ disabledHint }}</div>
 
-    <div class="search-results">
-      <template v-if="results.length > 0">
-        <div v-for="(r, i) in results" :key="i" class="result-item" @click="openResult(r)">
-          <button
-            class="result-close"
-            :class="{ deleting: deletingDocId === r.docId }"
-            :disabled="deletingDocId !== null"
-            :title="'删除该条索引文档'"
-            @click.stop="confirmDelete(r)"
-          >
-            <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <path d="M4 4l8 8M12 4l-8 8"/>
-            </svg>
+      <!-- 全文索引 tab -->
+      <template v-else-if="activeIndexTab === 'fulltext' && !fulltextOff">
+        <div class="search-status">
+          <span class="status-dot" :class="checking ? 'checking' : indexMessage ? 'ok' : 'err'"></span>
+          <span class="status-text">{{ protocolLabel }} {{ host }}:{{ port }}</span>
+          <button class="check-btn" :disabled="checking" @click="ensureIndex">
+            {{ checking ? '检查中' : '检查索引' }}
           </button>
-          <div class="result-title">{{ titleOf(r) }}</div>
-          <div class="result-snippet">{{ snippetOf(r) }}</div>
-          <div class="result-meta">
-            <span class="kind-tag" :class="kindOf(r)">{{ kindOf(r) === 's3' ? 'S3' : '本地' }}</span>
-            <span class="result-path">{{ pathOf(r) }}</span>
-            <span v-if="r.score" class="result-score">{{ r.score.toFixed(2) }}</span>
-          </div>
+        </div>
+
+        <div v-if="notice" class="search-notice">{{ notice }}</div>
+        <div v-if="fulltextError" class="search-error">{{ fulltextError }}</div>
+        <div v-if="fulltextSearching" class="search-loading">
+          <span class="loading-spinner"></span>
+          搜索中...
+        </div>
+
+        <div class="search-results">
+          <template v-if="fulltextResults.length > 0">
+            <div v-for="(r, i) in fulltextResults" :key="i" class="result-item" @click="openResult(r)">
+              <button
+                class="result-close"
+                :class="{ deleting: deletingId === r.docId }"
+                :disabled="deletingId !== null"
+                :title="'删除该条索引文档'"
+                @click.stop="confirmDelete('fulltext', r)"
+              >
+                <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                  <path d="M4 4l8 8M12 4l-8 8"/>
+                </svg>
+              </button>
+              <div class="result-title">{{ titleOf(r) }}</div>
+              <div class="result-snippet">{{ snippetOf(r) }}</div>
+              <div class="result-meta">
+                <span class="kind-tag" :class="kindOf(r)">{{ kindOf(r) === 's3' ? 'S3' : '本地' }}</span>
+                <span class="result-path">{{ pathOf(r) }}</span>
+                <span v-if="r.score" class="result-score">{{ r.score.toFixed(2) }}</span>
+              </div>
+            </div>
+          </template>
+          <div v-else-if="fulltextSearched && !fulltextSearching && !fulltextError" class="search-empty">没有匹配的文档</div>
+          <div v-else class="search-empty">输入关键词开始检索</div>
         </div>
       </template>
-      <div v-else-if="searched && !searching && !error" class="search-empty">没有匹配的文档</div>
-      <div v-else-if="!searched" class="search-empty">输入关键词开始检索</div>
+
+      <!-- 向量索引 tab -->
+      <template v-else-if="activeIndexTab === 'vector' && !vectorOff">
+        <div class="search-status">
+          <span class="status-dot" :class="vectorChecking ? 'checking' : vectorInfo ? 'ok' : 'err'"></span>
+          <span class="status-text">gRPC {{ settings.grpcHost }}:{{ settings.grpcPort }}</span>
+          <span v-if="vectorInfo" class="vector-stats">{{ vectorInfo.numElements }} 条</span>
+          <button class="check-btn" :disabled="vectorChecking" @click="checkVectorIndex">
+            {{ vectorChecking ? '检查中' : '检查索引' }}
+          </button>
+        </div>
+
+        <div v-if="notice" class="search-notice">{{ notice }}</div>
+        <div v-if="vectorError" class="search-error">{{ vectorError }}</div>
+        <div v-if="vectorSearching" class="search-loading">
+          <span class="loading-spinner"></span>
+          搜索中...
+        </div>
+
+        <div class="search-results">
+          <template v-if="vectorResults.length > 0">
+            <div v-for="(r, i) in vectorResults" :key="i" class="result-item" @click="openResult(r)">
+              <button
+                class="result-close"
+                :class="{ deleting: deletingId === r.docId }"
+                :disabled="deletingId !== null"
+                :title="'删除该条索引文档'"
+                @click.stop="confirmDelete('vector', r)"
+              >
+                <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                  <path d="M4 4l8 8M12 4l-8 8"/>
+                </svg>
+              </button>
+              <div class="result-title">{{ titleOf(r) }}</div>
+              <div class="result-snippet">{{ snippetOf(r) }}</div>
+              <div class="result-meta">
+                <span class="kind-tag" :class="kindOf(r)">{{ kindOf(r) === 's3' ? 'S3' : '本地' }}</span>
+                <span class="result-path">{{ pathOf(r) }}</span>
+                <span v-if="r.fields?.chunk_index" class="result-chunk">{{ Number(r.fields.chunk_index) + 1 }}/{{ r.fields.total_chunks || '?' }} 块</span>
+                <span v-if="r.score" class="result-score">{{ (r.score * 100).toFixed(1) }}%</span>
+              </div>
+            </div>
+          </template>
+          <div v-else-if="vectorSearched && !vectorSearching && !vectorError" class="search-empty">没有匹配的文档</div>
+          <div v-else class="search-empty">输入关键词开始检索</div>
+        </div>
+      </template>
     </div>
 
     <!-- 删除确认弹窗 -->
@@ -239,8 +454,8 @@ onMounted(() => {
       <div class="del-modal">
         <div class="del-modal-title">删除索引条目</div>
         <div class="del-modal-body">
-          确定要从索引中删除
-          <strong class="del-modal-name">{{ titleOf(confirmTarget) }}</strong>
+          确定要从{{ confirmTarget.tab === 'vector' ? '向量' : '全文' }}索引中删除
+          <strong class="del-modal-name">{{ titleOf(confirmTarget.item) }}</strong>
           吗？仅删除索引条目，不会删除原文件。该操作不可恢复。
         </div>
         <div class="del-modal-actions">
@@ -267,21 +482,68 @@ onMounted(() => {
   user-select: none;
 }
 
-.search-header {
+.search-bar {
   display: flex;
-  align-items: center;
   gap: 6px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  padding-bottom: 8px;
+  margin-bottom: 10px;
+}
+
+/* 搜索范围下拉 */
+.mode-select {
+  flex-shrink: 0;
+  padding: 5px 4px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+  max-width: 92px;
+  cursor: pointer;
+}
+
+.mode-select:focus {
+  border-color: var(--accent-color);
+}
+
+.mode-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 索引类型 tab 条 */
+.index-tabs {
+  display: flex;
+  gap: 2px;
   border-bottom: 1px solid var(--border-color);
   margin-bottom: 10px;
 }
 
-.search-bar {
+.index-tab {
+  padding: 6px 14px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  user-select: none;
+  transition: color 0.15s;
+}
+
+.index-tab:hover {
+  color: var(--text-primary);
+}
+
+.index-tab.active {
+  color: var(--accent-color);
+  border-bottom-color: var(--accent-color);
+  font-weight: 600;
+}
+
+.index-tab-pane {
+  flex: 1;
+  min-height: 0;
   display: flex;
-  gap: 6px;
+  flex-direction: column;
 }
 
 .search-bar input {
@@ -357,6 +619,15 @@ onMounted(() => {
   white-space: nowrap;
 }
 
+.vector-stats {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(64, 158, 255, 0.12);
+  color: #409eff;
+  font-size: 11px;
+}
+
 .check-btn {
   flex-shrink: 0;
   border: none;
@@ -382,15 +653,6 @@ onMounted(() => {
   50% { opacity: 0.3; }
 }
 
-.index-msg {
-  margin-top: 8px;
-  padding: 6px 10px;
-  background: rgba(74, 144, 217, 0.12);
-  color: var(--accent-color);
-  border-radius: 4px;
-  font-size: 12px;
-}
-
 .search-error {
   margin-top: 8px;
   padding: 6px 10px;
@@ -399,6 +661,17 @@ onMounted(() => {
   border-radius: 4px;
   font-size: 12px;
   word-break: break-all;
+}
+
+.search-disabled {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: rgba(220, 53, 69, 0.1);
+  color: var(--text-secondary);
+  border: 1px dashed var(--border-color);
+  border-radius: 6px;
+  font-size: 12px;
+  text-align: center;
 }
 
 .search-notice {
@@ -619,6 +892,11 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.result-chunk {
+  flex-shrink: 0;
+  color: var(--text-muted);
 }
 
 .result-score {

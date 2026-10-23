@@ -134,10 +134,9 @@ function registerS3Handlers() {
     }
   );
 }
-const INDEX_NAME = "md_docs";
-const DEFAULT_USER = "admin";
-const DEFAULT_PASS = "laoflchdb";
-const DEFAULT_SEARCH_LIMIT = 20;
+const DEFAULT_USER$1 = "admin";
+const DEFAULT_PASS$1 = "laoflchdb";
+const DEFAULT_SEARCH_LIMIT$1 = 20;
 const INDEX_SCHEMA_VERSION = 2;
 function buildFields(f) {
   return {
@@ -154,7 +153,7 @@ function buildFields(f) {
     blake3: f.blake3
   };
 }
-function pbVarint(value) {
+function pbVarint$1(value) {
   const bytes = [];
   let v = value;
   while (v >= 128) {
@@ -164,25 +163,25 @@ function pbVarint(value) {
   bytes.push(v);
   return Buffer.from(bytes);
 }
-function pbTag(fieldNum, wireType) {
-  return pbVarint(fieldNum << 3 | wireType);
+function pbTag$1(fieldNum, wireType) {
+  return pbVarint$1(fieldNum << 3 | wireType);
 }
-function pbLenField(fieldNum, payload) {
-  return Buffer.concat([pbTag(fieldNum, 2), pbVarint(payload.length), payload]);
+function pbLenField$1(fieldNum, payload) {
+  return Buffer.concat([pbTag$1(fieldNum, 2), pbVarint$1(payload.length), payload]);
 }
-function pbStrField(fieldNum, s) {
-  return pbLenField(fieldNum, Buffer.from(s, "utf8"));
+function pbStrField$1(fieldNum, s) {
+  return pbLenField$1(fieldNum, Buffer.from(s, "utf8"));
 }
-function pbVarintField(fieldNum, value) {
-  return Buffer.concat([pbTag(fieldNum, 0), pbVarint(value)]);
+function pbVarintField$1(fieldNum, value) {
+  return Buffer.concat([pbTag$1(fieldNum, 0), pbVarint$1(value)]);
 }
-function pbMapEntries(fieldNum, obj) {
+function pbMapEntries$1(fieldNum, obj) {
   return Object.entries(obj).map(([k, v]) => {
-    const inner = Buffer.concat([pbStrField(1, k), pbStrField(2, v)]);
-    return pbLenField(fieldNum, inner);
+    const inner = Buffer.concat([pbStrField$1(1, k), pbStrField$1(2, v)]);
+    return pbLenField$1(fieldNum, inner);
   });
 }
-function pbReadVarint(buf, offset) {
+function pbReadVarint$1(buf, offset) {
   let result = 0n;
   let shift = 0n;
   let i = offset;
@@ -195,24 +194,24 @@ function pbReadVarint(buf, offset) {
   }
   throw new Error("protobuf: invalid varint");
 }
-function pbParse(buf) {
+function pbParse$1(buf) {
   const fields = [];
   let offset = 0;
   while (offset < buf.length) {
-    const r = pbReadVarint(buf, offset);
+    const r = pbReadVarint$1(buf, offset);
     const tagVal = r.value;
     offset = r.offset;
     const fieldNum = Number(tagVal >> 3n);
     const wireType = Number(tagVal & 7n);
     if (wireType === 0) {
-      const vr = pbReadVarint(buf, offset);
+      const vr = pbReadVarint$1(buf, offset);
       fields.push({ fieldNum, wireType, value: vr.value });
       offset = vr.offset;
     } else if (wireType === 1) {
       fields.push({ fieldNum, wireType, value: buf.readBigUInt64LE(offset) });
       offset += 8;
     } else if (wireType === 2) {
-      const lr = pbReadVarint(buf, offset);
+      const lr = pbReadVarint$1(buf, offset);
       const len = Number(lr.value);
       offset = lr.offset;
       fields.push({ fieldNum, wireType, value: buf.subarray(offset, offset + len) });
@@ -226,42 +225,42 @@ function pbParse(buf) {
   }
   return fields;
 }
-function pbAsStr(v) {
+function pbAsStr$1(v) {
   return v.toString("utf8");
 }
-function pbAsBool(v) {
+function pbAsBool$1(v) {
   return v !== 0n;
 }
 function pbDecodeMap(buf) {
   const out = {};
   let key = null;
-  for (const f of pbParse(buf)) {
-    if (f.fieldNum === 1) key = pbAsStr(f.value);
+  for (const f of pbParse$1(buf)) {
+    if (f.fieldNum === 1) key = pbAsStr$1(f.value);
     else if (f.fieldNum === 2 && key) {
-      out[key] = pbAsStr(f.value);
+      out[key] = pbAsStr$1(f.value);
       key = null;
     }
   }
   return out;
 }
-function encodeLoginRequest(username, password) {
-  return Buffer.concat([pbStrField(1, username), pbStrField(2, password)]);
+function encodeLoginRequest$1(username, password) {
+  return Buffer.concat([pbStrField$1(1, username), pbStrField$1(2, password)]);
 }
-function decodeLoginResponse(buf) {
+function decodeLoginResponse$1(buf) {
   const out = { success: false, message: "", token: "" };
-  for (const f of pbParse(buf)) {
-    if (f.fieldNum === 1) out.success = pbAsBool(f.value);
-    else if (f.fieldNum === 2) out.message = pbAsStr(f.value);
-    else if (f.fieldNum === 3) out.token = pbAsStr(f.value);
+  for (const f of pbParse$1(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool$1(f.value);
+    else if (f.fieldNum === 2) out.message = pbAsStr$1(f.value);
+    else if (f.fieldNum === 3) out.token = pbAsStr$1(f.value);
   }
   return out;
 }
 function decodeListIndicesResponse(buf) {
   const out = { success: false, indexNames: [], message: "" };
-  for (const f of pbParse(buf)) {
-    if (f.fieldNum === 1) out.success = pbAsBool(f.value);
-    else if (f.fieldNum === 2) out.indexNames.push(pbAsStr(f.value));
-    else if (f.fieldNum === 3) out.message = pbAsStr(f.value);
+  for (const f of pbParse$1(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool$1(f.value);
+    else if (f.fieldNum === 2) out.indexNames.push(pbAsStr$1(f.value));
+    else if (f.fieldNum === 3) out.message = pbAsStr$1(f.value);
   }
   return out;
 }
@@ -269,108 +268,108 @@ function encodeCreateIndexRequest(msg) {
   const { indexName, fields } = msg;
   const fieldParts = (fields || []).map((f) => {
     const inner = Buffer.concat([
-      pbStrField(1, f.name),
-      pbVarintField(2, f.fieldType),
-      f.comment ? pbStrField(3, f.comment) : Buffer.alloc(0)
+      pbStrField$1(1, f.name),
+      pbVarintField$1(2, f.fieldType),
+      f.comment ? pbStrField$1(3, f.comment) : Buffer.alloc(0)
     ]);
-    return pbLenField(2, inner);
+    return pbLenField$1(2, inner);
   });
-  return Buffer.concat([pbStrField(1, indexName), ...fieldParts]);
+  return Buffer.concat([pbStrField$1(1, indexName), ...fieldParts]);
 }
 function decodeCreateIndexResponse(buf) {
   const out = { success: false, indexId: 0, message: "" };
-  for (const f of pbParse(buf)) {
-    if (f.fieldNum === 1) out.success = pbAsBool(f.value);
+  for (const f of pbParse$1(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool$1(f.value);
     else if (f.fieldNum === 2) out.indexId = Number(f.value);
-    else if (f.fieldNum === 3) out.message = pbAsStr(f.value);
+    else if (f.fieldNum === 3) out.message = pbAsStr$1(f.value);
   }
   return out;
 }
 function encodeDropIndexRequest(indexName) {
-  return pbStrField(1, indexName);
+  return pbStrField$1(1, indexName);
 }
 function decodeDropIndexResponse(buf) {
   const out = { success: false, message: "" };
-  for (const f of pbParse(buf)) {
-    if (f.fieldNum === 1) out.success = pbAsBool(f.value);
-    else if (f.fieldNum === 2) out.message = pbAsStr(f.value);
+  for (const f of pbParse$1(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool$1(f.value);
+    else if (f.fieldNum === 2) out.message = pbAsStr$1(f.value);
   }
   return out;
 }
 function encodeGetIndexFieldsRequest(indexName) {
-  return pbStrField(1, indexName);
+  return pbStrField$1(1, indexName);
 }
 function decodeGetIndexFieldsResponse(buf) {
   const out = { success: false, fieldNames: [], message: "" };
-  for (const f of pbParse(buf)) {
-    if (f.fieldNum === 1) out.success = pbAsBool(f.value);
+  for (const f of pbParse$1(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool$1(f.value);
     else if (f.fieldNum === 2) {
-      for (const it of pbParse(f.value)) {
-        if (it.fieldNum === 3) out.fieldNames.push(pbAsStr(it.value));
+      for (const it of pbParse$1(f.value)) {
+        if (it.fieldNum === 3) out.fieldNames.push(pbAsStr$1(it.value));
       }
-    } else if (f.fieldNum === 3) out.message = pbAsStr(f.value);
+    } else if (f.fieldNum === 3) out.message = pbAsStr$1(f.value);
   }
   return out;
 }
 function encodeDeleteDocumentRequest(indexName, docId) {
-  return Buffer.concat([pbStrField(1, indexName), pbStrField(2, docId)]);
+  return Buffer.concat([pbStrField$1(1, indexName), pbStrField$1(2, docId)]);
 }
 function decodeDeleteDocumentResponse(buf) {
   const out = { success: false, message: "" };
-  for (const f of pbParse(buf)) {
-    if (f.fieldNum === 1) out.success = pbAsBool(f.value);
-    else if (f.fieldNum === 2) out.message = pbAsStr(f.value);
+  for (const f of pbParse$1(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool$1(f.value);
+    else if (f.fieldNum === 2) out.message = pbAsStr$1(f.value);
   }
   return out;
 }
 function encodeAddDocumentRequest(msg) {
   const { indexName, docId, fields } = msg;
   return Buffer.concat([
-    pbStrField(1, indexName),
-    docId ? pbStrField(2, docId) : Buffer.alloc(0),
-    ...pbMapEntries(3, fields || {})
+    pbStrField$1(1, indexName),
+    docId ? pbStrField$1(2, docId) : Buffer.alloc(0),
+    ...pbMapEntries$1(3, fields || {})
   ]);
 }
 function decodeAddDocumentResponse(buf) {
   const out = { success: false, docId: "", message: "" };
-  for (const f of pbParse(buf)) {
-    if (f.fieldNum === 1) out.success = pbAsBool(f.value);
-    else if (f.fieldNum === 2) out.docId = pbAsStr(f.value);
-    else if (f.fieldNum === 3) out.message = pbAsStr(f.value);
+  for (const f of pbParse$1(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool$1(f.value);
+    else if (f.fieldNum === 2) out.docId = pbAsStr$1(f.value);
+    else if (f.fieldNum === 3) out.message = pbAsStr$1(f.value);
   }
   return out;
 }
 function encodeSearchIndexRequest(msg) {
-  const { indexName, query = "", limit = DEFAULT_SEARCH_LIMIT, fieldQueries = {} } = msg;
+  const { indexName, query = "", limit = DEFAULT_SEARCH_LIMIT$1, fieldQueries = {} } = msg;
   return Buffer.concat([
-    pbStrField(1, indexName),
-    pbStrField(2, query || ""),
-    pbVarintField(3, limit),
-    ...pbMapEntries(4, fieldQueries)
+    pbStrField$1(1, indexName),
+    pbStrField$1(2, query || ""),
+    pbVarintField$1(3, limit),
+    ...pbMapEntries$1(4, fieldQueries)
   ]);
 }
 function decodeSearchIndexResponse(buf) {
   const out = { success: false, results: [], message: "" };
-  for (const f of pbParse(buf)) {
-    if (f.fieldNum === 1) out.success = pbAsBool(f.value);
+  for (const f of pbParse$1(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool$1(f.value);
     else if (f.fieldNum === 2) {
       const item = { docId: "", score: 0, fields: {} };
-      for (const it of pbParse(f.value)) {
-        if (it.fieldNum === 1) item.docId = pbAsStr(it.value);
+      for (const it of pbParse$1(f.value)) {
+        if (it.fieldNum === 1) item.docId = pbAsStr$1(it.value);
         else if (it.fieldNum === 2) item.score = it.value;
         else if (it.fieldNum === 3) Object.assign(item.fields, pbDecodeMap(it.value));
       }
       out.results.push(item);
-    } else if (f.fieldNum === 3) out.message = pbAsStr(f.value);
+    } else if (f.fieldNum === 3) out.message = pbAsStr$1(f.value);
   }
   return out;
 }
-let grpcModule = null;
-function getGrpc() {
-  if (!grpcModule) {
-    grpcModule = require("@grpc/grpc-js");
+let grpcModule$1 = null;
+function getGrpc$1() {
+  if (!grpcModule$1) {
+    grpcModule$1 = require("@grpc/grpc-js");
   }
-  return grpcModule;
+  return grpcModule$1;
 }
 function makeGrpcServiceDefinition() {
   const def = (methodName, serialize, deserialize) => ({
@@ -383,7 +382,7 @@ function makeGrpcServiceDefinition() {
     responseDeserialize: (buf) => deserialize(Buffer.from(buf))
   });
   return {
-    login: def("Login", (m) => encodeLoginRequest(m.username, m.password), decodeLoginResponse),
+    login: def("Login", (m) => encodeLoginRequest$1(m.username, m.password), decodeLoginResponse$1),
     createIndex: def("CreateIndex", encodeCreateIndexRequest, decodeCreateIndexResponse),
     dropIndex: def("DropIndex", (m) => encodeDropIndexRequest(m.indexName), decodeDropIndexResponse),
     listIndices: def("ListIndices", () => Buffer.alloc(0), decodeListIndicesResponse),
@@ -401,14 +400,14 @@ class GrpcClient {
   }
   ensureClient() {
     if (!this.client) {
-      const grpc = getGrpc();
+      const grpc = getGrpc$1();
       const Client = grpc.makeClientConstructor(makeGrpcServiceDefinition(), "LaoflchDb");
       this.client = new Client(this.address, grpc.credentials.createInsecure());
     }
     return this.client;
   }
   unary(method, req) {
-    const grpc = getGrpc();
+    const grpc = getGrpc$1();
     const client = this.ensureClient();
     return new Promise((resolve, reject) => {
       const md = new grpc.Metadata();
@@ -420,7 +419,7 @@ class GrpcClient {
     });
   }
   async login() {
-    const resp = await this.unary("login", { username: DEFAULT_USER, password: DEFAULT_PASS });
+    const resp = await this.unary("login", { username: DEFAULT_USER$1, password: DEFAULT_PASS$1 });
     if (!resp.success || !resp.token) throw new Error(resp.message || "登录失败");
     this.token = resp.token;
   }
@@ -525,7 +524,7 @@ class RestClient {
   async login() {
     const data = await this.request("/api/v1/login", {
       method: "POST",
-      body: { username: DEFAULT_USER, password: DEFAULT_PASS }
+      body: { username: DEFAULT_USER$1, password: DEFAULT_PASS$1 }
     });
     if (!data || !data.token) throw new Error("登录失败：未获取到 token");
     this.token = data.token;
@@ -639,28 +638,28 @@ function s3DocId(config, bucket, key) {
   if (!/^https?:\/\//i.test(endpoint)) endpoint = "http://" + endpoint;
   return `${endpoint}/${bucket}/${key}`;
 }
-async function ensureIndex(protocol, host, port) {
+async function ensureIndex(protocol, host, port, indexName) {
   try {
     const client = getClient(protocol, host, port);
     const indices = await client.listIndices();
-    if (indices.includes(INDEX_NAME)) {
+    if (indices.includes(indexName)) {
       try {
-        const names = await client.getIndexFields(INDEX_NAME);
+        const names = await client.getIndexFields(indexName);
         const hasAll = INDEX_FIELDS.every((f) => names.includes(f.name));
         if (hasAll) {
-          return { ok: true, message: `索引 ${INDEX_NAME} 已存在`, created: false };
+          return { ok: true, message: `索引 ${indexName} 已存在`, created: false };
         }
-        await client.dropIndex(INDEX_NAME);
-        await client.createIndex(INDEX_NAME, INDEX_FIELDS);
-        return { ok: true, message: `索引 ${INDEX_NAME} schema 已升级（v${INDEX_SCHEMA_VERSION}）并重建`, created: true };
+        await client.dropIndex(indexName);
+        await client.createIndex(indexName, INDEX_FIELDS);
+        return { ok: true, message: `索引 ${indexName} schema 已升级（v${INDEX_SCHEMA_VERSION}）并重建`, created: true };
       } catch (e) {
-        await client.dropIndex(INDEX_NAME);
-        await client.createIndex(INDEX_NAME, INDEX_FIELDS);
-        return { ok: true, message: `索引 ${INDEX_NAME} 已重建（v${INDEX_SCHEMA_VERSION}）`, created: true };
+        await client.dropIndex(indexName);
+        await client.createIndex(indexName, INDEX_FIELDS);
+        return { ok: true, message: `索引 ${indexName} 已重建（v${INDEX_SCHEMA_VERSION}）`, created: true };
       }
     }
-    await client.createIndex(INDEX_NAME, INDEX_FIELDS);
-    return { ok: true, message: `已创建索引 ${INDEX_NAME}（v${INDEX_SCHEMA_VERSION}）`, created: true };
+    await client.createIndex(indexName, INDEX_FIELDS);
+    return { ok: true, message: `已创建索引 ${indexName}（v${INDEX_SCHEMA_VERSION}）`, created: true };
   } catch (e) {
     return { ok: false, message: e.message || "检查索引失败", created: false };
   }
@@ -678,39 +677,39 @@ const INDEX_FIELDS = [
   { name: "updated_at", fieldType: 0, comment: "修改时间（ISO）" },
   { name: "blake3", fieldType: 0, comment: "文件内容 BLAKE3 摘要（64位hex，去重标识）" }
 ];
-let hashWasmModule = null;
-function getHashWasm() {
-  if (!hashWasmModule) {
-    hashWasmModule = require("hash-wasm");
+let hashWasmModule$1 = null;
+function getHashWasm$1() {
+  if (!hashWasmModule$1) {
+    hashWasmModule$1 = require("hash-wasm");
   }
-  return hashWasmModule;
+  return hashWasmModule$1;
 }
 async function computeBlake3(content) {
-  const { blake3 } = getHashWasm();
+  const { blake3 } = getHashWasm$1();
   return await blake3(Buffer.isBuffer(content) ? content.toString("utf8") : content);
 }
-async function queryByDigest(protocol, host, port, digest) {
+async function queryByDigest(protocol, host, port, indexName, digest) {
   if (!digest) return null;
   const client = getClient(protocol, host, port);
-  const results = await client.searchMultiField(INDEX_NAME, { blake3: digest }, 20);
+  const results = await client.searchMultiField(indexName, { blake3: digest }, 20);
   return results.find((r) => r.fields.blake3 === digest) || null;
 }
-async function upsertDocument(client, fields) {
+async function upsertDocument(client, indexName, fields) {
   const digest = fields.blake3;
   if (digest) {
     try {
-      const old = await client.searchMultiField(INDEX_NAME, { blake3: digest }, 50);
+      const old = await client.searchMultiField(indexName, { blake3: digest }, 50);
       for (const hit of old) {
         if (hit.fields.blake3 === digest) {
-          await client.deleteDocument(INDEX_NAME, hit.docId);
+          await client.deleteDocument(indexName, hit.docId);
         }
       }
     } catch {
     }
   }
-  return client.addDocument(INDEX_NAME, "", fields);
+  return client.addDocument(indexName, "", fields);
 }
-function collectMarkdownFiles(dirPath) {
+function collectMarkdownFiles$1(dirPath) {
   const results = [];
   const walk = (d) => {
     let entries;
@@ -736,9 +735,12 @@ function collectMarkdownFiles(dirPath) {
   walk(dirPath);
   return results;
 }
-async function indexLocalFile(protocol, host, port, filePath) {
+async function indexLocalFile(protocol, host, port, indexName, filePath) {
   try {
     const content = fs.readFileSync(filePath, "utf8");
+    if (!content.trim()) {
+      return { ok: true, message: `跳过空文件：${path.basename(filePath)}`, docId: void 0 };
+    }
     const digest = await computeBlake3(content);
     let mtime = (/* @__PURE__ */ new Date()).toISOString();
     try {
@@ -759,18 +761,20 @@ async function indexLocalFile(protocol, host, port, filePath) {
       blake3: digest
     });
     const client = getClient(protocol, host, port);
-    const docId = await upsertDocument(client, fields);
+    const docId = await upsertDocument(client, indexName, fields);
     return { ok: true, message: `已生成索引：${path.basename(filePath)}`, docId };
   } catch (e) {
     return { ok: false, message: `索引 ${path.basename(filePath)} 失败：${e.message || e}`, docId: void 0 };
   }
 }
-async function indexDir(protocol, host, port, dirPath) {
-  const files = collectMarkdownFiles(dirPath);
+async function indexDir(protocol, host, port, indexName, dirPath, onProgress) {
+  const files = collectMarkdownFiles$1(dirPath);
   let okCount = 0;
   let firstErr = null;
-  for (const filePath of files) {
-    const res = await indexLocalFile(protocol, host, port, filePath);
+  for (let i = 0; i < files.length; i++) {
+    const filePath = files[i];
+    onProgress?.(i + 1, files.length, path.basename(filePath));
+    const res = await indexLocalFile(protocol, host, port, indexName, filePath);
     if (res.ok) okCount++;
     else if (!firstErr) firstErr = res.message;
   }
@@ -801,9 +805,12 @@ async function fetchS3Content(config, bucket, key) {
   }
   return Buffer.concat(chunks).toString("utf8");
 }
-async function indexS3File(protocol, host, port, config, bucket, key) {
+async function indexS3File(protocol, host, port, indexName, config, bucket, key) {
   try {
     const content = await fetchS3Content(config, bucket, key);
+    if (!content.trim()) {
+      return { ok: true, message: `跳过空文件：${path.basename(key)}`, docId: void 0 };
+    }
     const digest = await computeBlake3(content);
     const fields = buildFields({
       docId: s3DocId(config, bucket, key),
@@ -819,22 +826,26 @@ async function indexS3File(protocol, host, port, config, bucket, key) {
       blake3: digest
     });
     const client = getClient(protocol, host, port);
-    const docId = await upsertDocument(client, fields);
+    const docId = await upsertDocument(client, indexName, fields);
     return { ok: true, message: `已生成索引：${path.basename(key)}`, docId };
   } catch (e) {
     return { ok: false, message: `索引 ${path.basename(key)} 失败：${e.message || e}`, docId: void 0 };
   }
 }
 function registerIndexSearchHandlers() {
-  electron.ipcMain.handle("index:ensure", async (_e, protocol, host, port) => {
-    return ensureIndex(protocol, host, port);
-  });
+  electron.ipcMain.handle("app:hostname", () => os.hostname());
+  electron.ipcMain.handle(
+    "index:ensure",
+    async (_e, protocol, host, port, indexName) => {
+      return ensureIndex(protocol, host, port, indexName);
+    }
+  );
   electron.ipcMain.handle(
     "index:search",
-    async (_e, protocol, host, port, query, limit) => {
+    async (_e, protocol, host, port, indexName, query, limit) => {
       try {
         const client = getClient(protocol, host, port);
-        const results = await client.search(INDEX_NAME, query, limit || DEFAULT_SEARCH_LIMIT);
+        const results = await client.search(indexName, query, limit || DEFAULT_SEARCH_LIMIT$1);
         return { ok: true, message: "", results };
       } catch (e) {
         return { ok: false, message: e.message || "搜索失败", results: [] };
@@ -843,25 +854,27 @@ function registerIndexSearchHandlers() {
   );
   electron.ipcMain.handle(
     "index:indexLocal",
-    async (_e, protocol, host, port, filePath) => {
-      return indexLocalFile(protocol, host, port, filePath);
+    async (_e, protocol, host, port, indexName, filePath) => {
+      return indexLocalFile(protocol, host, port, indexName, filePath);
     }
   );
   electron.ipcMain.handle(
     "index:indexDir",
-    async (_e, protocol, host, port, dirPath) => {
-      return indexDir(protocol, host, port, dirPath);
+    async (e, protocol, host, port, indexName, dirPath) => {
+      return indexDir(protocol, host, port, indexName, dirPath, (done, total, fileName) => {
+        e.sender.send("index:progress", { done, total, fileName });
+      });
     }
   );
   electron.ipcMain.handle(
     "index:indexS3",
-    async (_e, protocol, host, port, config, bucket, key) => {
-      return indexS3File(protocol, host, port, config, bucket, key);
+    async (_e, protocol, host, port, indexName, config, bucket, key) => {
+      return indexS3File(protocol, host, port, indexName, config, bucket, key);
     }
   );
   electron.ipcMain.handle(
     "index:checkFiles",
-    async (_e, protocol, host, port, paths) => {
+    async (_e, protocol, host, port, indexName, paths) => {
       const results = {};
       const CONCURRENCY = 4;
       const work = paths.filter(Boolean);
@@ -871,8 +884,12 @@ function registerIndexSearchHandlers() {
           const p = work[cursor++];
           try {
             const content = fs.readFileSync(p, "utf8");
+            if (!content.trim()) {
+              results[p] = false;
+              continue;
+            }
             const digest = await computeBlake3(content);
-            const hit = await queryByDigest(protocol, host, port, digest);
+            const hit = await queryByDigest(protocol, host, port, indexName, digest);
             results[p] = !!hit;
           } catch {
             results[p] = false;
@@ -886,17 +903,68 @@ function registerIndexSearchHandlers() {
     }
   );
   electron.ipcMain.handle(
+    "index:checkS3Files",
+    async (_e, protocol, host, port, indexName, config, bucket, keys) => {
+      const results = {};
+      const CONCURRENCY = 4;
+      const work = keys.filter(Boolean);
+      let cursor = 0;
+      const worker = async () => {
+        while (cursor < work.length) {
+          const key = work[cursor++];
+          try {
+            const content = await fetchS3Content(config, bucket, key);
+            if (!content.trim()) {
+              results[key] = false;
+              continue;
+            }
+            const digest = await computeBlake3(content);
+            const hit = await queryByDigest(protocol, host, port, indexName, digest);
+            results[key] = !!hit;
+          } catch {
+            results[key] = false;
+          }
+        }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(CONCURRENCY, Math.max(work.length, 1)) }, () => worker())
+      );
+      return { ok: true, message: "", results };
+    }
+  );
+  electron.ipcMain.handle(
+    "index:getDoc",
+    async (_e, protocol, host, port, indexName, kind, path2, config, bucket, key) => {
+      try {
+        let content;
+        if (kind === "s3") {
+          if (!config || !bucket || !key) return { ok: false, message: "无效的对象参数", doc: null };
+          content = await fetchS3Content(config, bucket, key);
+        } else {
+          content = fs.readFileSync(path2, "utf8");
+        }
+        if (!content.trim()) return { ok: false, message: "空文件没有索引条目", doc: null };
+        const digest = await computeBlake3(content);
+        const hit = await queryByDigest(protocol, host, port, indexName, digest);
+        if (!hit) return { ok: false, message: "未找到对应的索引条目", doc: null };
+        return { ok: true, message: "", doc: hit };
+      } catch (e) {
+        return { ok: false, message: e instanceof Error ? e.message : "获取索引详情失败", doc: null };
+      }
+    }
+  );
+  electron.ipcMain.handle(
     "index:deleteDoc",
-    async (_e, protocol, host, port, docId, fields) => {
+    async (_e, protocol, host, port, indexName, docId, fields) => {
       try {
         if (!/^\d+$/.test(docId || "")) {
           return { ok: false, message: `无效的文档 ID：${docId || "（空）"}` };
         }
         const client = getClient(protocol, host, port);
-        await client.deleteDocument(INDEX_NAME, docId);
+        await client.deleteDocument(indexName, docId);
         const digest = fields?.blake3;
         if (digest) {
-          const remaining = await client.searchMultiField(INDEX_NAME, { blake3: digest }, 20);
+          const remaining = await client.searchMultiField(indexName, { blake3: digest }, 20);
           if (remaining.some((r) => r.docId === docId && r.fields.blake3 === digest)) {
             return { ok: false, message: "删除未生效：服务端仍存在该条目（doc_id 不匹配？）" };
           }
@@ -908,7 +976,849 @@ function registerIndexSearchHandlers() {
     }
   );
 }
+const DEFAULT_USER = "admin";
+const DEFAULT_PASS = "laoflchdb";
+const DEFAULT_VECTOR_DIM = 1024;
+const DEFAULT_CHUNK_SIZE = 800;
+const DEFAULT_CHUNK_OVERLAP = 100;
+const DEFAULT_SEARCH_LIMIT = 20;
+function pbVarint(value) {
+  const bytes = [];
+  let v = value;
+  while (v >= 128) {
+    bytes.push(v & 127 | 128);
+    v = Math.floor(v / 128);
+  }
+  bytes.push(v);
+  return Buffer.from(bytes);
+}
+function pbTag(fieldNum, wireType) {
+  return pbVarint(fieldNum << 3 | wireType);
+}
+function pbLenField(fieldNum, payload) {
+  return Buffer.concat([pbTag(fieldNum, 2), pbVarint(payload.length), payload]);
+}
+function pbStrField(fieldNum, s) {
+  return pbLenField(fieldNum, Buffer.from(s, "utf8"));
+}
+function pbVarintField(fieldNum, value) {
+  return Buffer.concat([pbTag(fieldNum, 0), pbVarint(value)]);
+}
+function pbFloatFieldPacked(fieldNum, floats) {
+  const payload = Buffer.alloc(floats.length * 4);
+  floats.forEach((v, i) => payload.writeFloatLE(v, i * 4));
+  return pbLenField(fieldNum, payload);
+}
+function pbDecodeFloatPacked(buf) {
+  const out = [];
+  for (let i = 0; i + 4 <= buf.length; i += 4) out.push(buf.readFloatLE(i));
+  return out;
+}
+function pbMapEntries(fieldNum, obj) {
+  return Object.entries(obj).map(([k, v]) => {
+    const inner = Buffer.concat([pbStrField(1, k), pbStrField(2, v)]);
+    return pbLenField(fieldNum, inner);
+  });
+}
+function pbReadVarint(buf, offset) {
+  let result = 0n;
+  let shift = 0n;
+  let i = offset;
+  while (i < buf.length) {
+    const byte = buf[i];
+    result |= BigInt(byte & 127) << shift;
+    if ((byte & 128) === 0) return { value: result, offset: i + 1 };
+    shift += 7n;
+    i++;
+  }
+  throw new Error("protobuf: invalid varint");
+}
+function pbParse(buf) {
+  const fields = [];
+  let offset = 0;
+  while (offset < buf.length) {
+    const r = pbReadVarint(buf, offset);
+    const tagVal = r.value;
+    offset = r.offset;
+    const fieldNum = Number(tagVal >> 3n);
+    const wireType = Number(tagVal & 7n);
+    if (wireType === 0) {
+      const vr = pbReadVarint(buf, offset);
+      fields.push({ fieldNum, wireType, value: vr.value });
+      offset = vr.offset;
+    } else if (wireType === 1) {
+      fields.push({ fieldNum, wireType, value: buf.readBigUInt64LE(offset) });
+      offset += 8;
+    } else if (wireType === 2) {
+      const lr = pbReadVarint(buf, offset);
+      const len = Number(lr.value);
+      offset = lr.offset;
+      fields.push({ fieldNum, wireType, value: buf.subarray(offset, offset + len) });
+      offset += len;
+    } else if (wireType === 5) {
+      fields.push({ fieldNum, wireType, value: buf.readFloatLE(offset) });
+      offset += 4;
+    } else {
+      throw new Error("protobuf: unsupported wire type " + wireType);
+    }
+  }
+  return fields;
+}
+function pbAsStr(v) {
+  return v.toString("utf8");
+}
+function pbAsBool(v) {
+  return v !== 0n;
+}
+function encodeCreateEmbeddingRequest(msg) {
+  const { modelName, texts, dim } = msg;
+  return Buffer.concat([
+    pbStrField(1, modelName),
+    ...(texts || []).map((t) => pbStrField(2, t)),
+    dim ? pbVarintField(3, dim) : Buffer.alloc(0)
+  ]);
+}
+function decodeCreateEmbeddingResponse(buf) {
+  const out = { success: false, message: "", results: [] };
+  for (const f of pbParse(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool(f.value);
+    else if (f.fieldNum === 2) out.message = pbAsStr(f.value);
+    else if (f.fieldNum === 3) {
+      const r = { text: "", embedding: [], dim: 0 };
+      for (const it of pbParse(f.value)) {
+        if (it.fieldNum === 1) r.text = pbAsStr(it.value);
+        else if (it.fieldNum === 2) r.embedding = pbDecodeFloatPacked(it.value);
+        else if (it.fieldNum === 3) r.dim = Number(it.value);
+      }
+      out.results.push(r);
+    }
+  }
+  return out;
+}
+function encodeGetIndexInfoRequest(indexName) {
+  return pbStrField(1, indexName);
+}
+function decodeGetIndexInfoResponse(buf) {
+  const out = { success: false, message: "", stats: null };
+  for (const f of pbParse(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool(f.value);
+    else if (f.fieldNum === 2) out.message = pbAsStr(f.value);
+    else if (f.fieldNum === 3) {
+      const s = { numElements: 0, dim: 0, name: "" };
+      for (const it of pbParse(f.value)) {
+        if (it.fieldNum === 1) s.numElements = Number(it.value);
+        else if (it.fieldNum === 7) s.dim = Number(it.value);
+        else if (it.fieldNum === 10) s.name = pbAsStr(it.value);
+      }
+      out.stats = s;
+    }
+  }
+  return out;
+}
+function encodeInsertEmbeddingRequest(msg) {
+  const { id, indexName, embedding, fields } = msg;
+  return Buffer.concat([
+    pbVarintField(1, id),
+    pbStrField(2, indexName),
+    pbFloatFieldPacked(3, embedding),
+    ...pbMapEntries(4, fields || {})
+  ]);
+}
+function decodeSimpleResponse(buf) {
+  const out = { success: false, message: "" };
+  for (const f of pbParse(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool(f.value);
+    else if (f.fieldNum === 2) out.message = pbAsStr(f.value);
+  }
+  return out;
+}
+function encodeSearchEmbeddingRequest(msg) {
+  const { queryEmbedding, topK, indexName, fieldFilters = {} } = msg;
+  return Buffer.concat([
+    pbFloatFieldPacked(1, queryEmbedding),
+    pbVarintField(2, topK),
+    pbStrField(3, indexName),
+    ...pbMapEntries(4, fieldFilters)
+  ]);
+}
+function decodeSearchEmbeddingResponse(buf) {
+  const out = { success: false, message: "", results: [] };
+  for (const f of pbParse(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool(f.value);
+    else if (f.fieldNum === 2) out.message = pbAsStr(f.value);
+    else if (f.fieldNum === 3) {
+      const hit = { id: 0, distance: 0 };
+      for (const it of pbParse(f.value)) {
+        if (it.fieldNum === 1) hit.id = Number(it.value);
+        else if (it.fieldNum === 2) hit.distance = it.value;
+      }
+      out.results.push(hit);
+    }
+  }
+  return out;
+}
+function encodeDeleteEmbeddingRequest(id, indexName) {
+  return Buffer.concat([pbVarintField(1, id), pbStrField(2, indexName)]);
+}
+function decodeGetEmbeddingByIdResponse(buf) {
+  const out = { success: false, message: "", exists: false, dim: 0, embedding: [] };
+  for (const f of pbParse(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool(f.value);
+    else if (f.fieldNum === 2) out.message = pbAsStr(f.value);
+    else if (f.fieldNum === 4) out.exists = pbAsBool(f.value);
+    else if (f.fieldNum === 5) out.dim = Number(f.value);
+    else if (f.fieldNum === 7) out.embedding = pbDecodeFloatPacked(f.value);
+  }
+  return out;
+}
+let grpcModule = null;
+function getGrpc() {
+  if (!grpcModule) grpcModule = require("@grpc/grpc-js");
+  return grpcModule;
+}
+function makeServiceDefinition(servicePath, methods) {
+  const def = (methodName, serialize, deserialize) => ({
+    // gRPC 服务端（tonic）注册的路径使用 proto 原始大写驼峰方法名（如 CreateEmbedding），
+    // 而 grpc-js 客户端方法名是小驼峰（createEmbedding），必须首字母大写才能匹配服务端
+    path: `${servicePath}/${methodName[0].toUpperCase()}${methodName.slice(1)}`,
+    requestStream: false,
+    responseStream: false,
+    requestSerialize: (msg) => Buffer.from(serialize(msg)),
+    requestDeserialize: (buf) => buf,
+    responseSerialize: (msg) => Buffer.from(msg),
+    responseDeserialize: (buf) => deserialize(Buffer.from(buf))
+  });
+  const out = {};
+  for (const [name, m] of Object.entries(methods)) {
+    out[name] = def(name, m.serialize, m.deserialize);
+  }
+  return out;
+}
+function encodeLoginRequest(username, password) {
+  return Buffer.concat([pbStrField(1, username), pbStrField(2, password)]);
+}
+function decodeLoginResponse(buf) {
+  const out = { success: false, message: "", token: "" };
+  for (const f of pbParse(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool(f.value);
+    else if (f.fieldNum === 2) out.message = pbAsStr(f.value);
+    else if (f.fieldNum === 3) out.token = pbAsStr(f.value);
+  }
+  return out;
+}
+function makeAuthServiceDefinition() {
+  return makeServiceDefinition("/laoflchdb.rpc.LaoflchDb", {
+    login: {
+      serialize: (m) => encodeLoginRequest(m.username, m.password),
+      deserialize: decodeLoginResponse
+    }
+  });
+}
+function makeVectorServiceDefinition() {
+  return makeServiceDefinition("/laoflchdb.vector.VectorService", {
+    createEmbedding: {
+      serialize: encodeCreateEmbeddingRequest,
+      deserialize: decodeCreateEmbeddingResponse
+    }
+  });
+}
+function makeEmbeddingServiceDefinition() {
+  return makeServiceDefinition("/laoflchdb.embedding.EmbeddingIndexService", {
+    getIndexInfo: {
+      serialize: (m) => encodeGetIndexInfoRequest(m.indexName),
+      deserialize: decodeGetIndexInfoResponse
+    },
+    insertEmbedding: {
+      serialize: encodeInsertEmbeddingRequest,
+      deserialize: decodeSimpleResponse
+    },
+    searchEmbedding: {
+      serialize: encodeSearchEmbeddingRequest,
+      deserialize: decodeSearchEmbeddingResponse
+    },
+    deleteEmbedding: {
+      serialize: (m) => encodeDeleteEmbeddingRequest(m.id, m.indexName),
+      deserialize: decodeSimpleResponse
+    },
+    getEmbeddingById: {
+      serialize: (m) => encodeDeleteEmbeddingRequest(m.id, m.indexName),
+      deserialize: decodeGetEmbeddingByIdResponse
+    }
+  });
+}
+class VectorGrpcClient {
+  constructor(host, port) {
+    this.token = null;
+    this.authClient = null;
+    this.vectorClient = null;
+    this.embeddingClient = null;
+    this.address = host.replace(/^https?:\/\//i, "") + ":" + port;
+  }
+  ensureAuthClient() {
+    if (!this.authClient) {
+      const grpc = getGrpc();
+      const Client = grpc.makeClientConstructor(makeAuthServiceDefinition(), "LaoflchDb");
+      this.authClient = new Client(this.address, grpc.credentials.createInsecure());
+    }
+    return this.authClient;
+  }
+  ensureVectorClient() {
+    if (!this.vectorClient) {
+      const grpc = getGrpc();
+      const Client = grpc.makeClientConstructor(makeVectorServiceDefinition(), "VectorService");
+      this.vectorClient = new Client(this.address, grpc.credentials.createInsecure());
+    }
+    return this.vectorClient;
+  }
+  ensureEmbeddingClient() {
+    if (!this.embeddingClient) {
+      const grpc = getGrpc();
+      const Client = grpc.makeClientConstructor(makeEmbeddingServiceDefinition(), "EmbeddingIndexService");
+      this.embeddingClient = new Client(this.address, grpc.credentials.createInsecure());
+    }
+    return this.embeddingClient;
+  }
+  unary(client, method, req) {
+    const grpc = getGrpc();
+    return new Promise((resolve, reject) => {
+      const md = new grpc.Metadata();
+      if (this.token) md.set("authorization", "Bearer " + this.token);
+      client[method](req, md, (err, res) => {
+        if (err) reject(err);
+        else resolve(res);
+      });
+    });
+  }
+  async login() {
+    const resp = await this.unary(this.ensureAuthClient(), "login", {
+      username: DEFAULT_USER,
+      password: DEFAULT_PASS
+    });
+    if (!resp.success || !resp.token) throw new Error(resp.message || "登录失败");
+    this.token = resp.token;
+  }
+  async withAuth(fn) {
+    try {
+      return await fn();
+    } catch (e) {
+      const msg = e?.details || (e instanceof Error ? e.message : "");
+      const authFailed = e?.code === 16 || /unauthor|未提供有效的认证|authentication required|invalid or missing token/i.test(msg);
+      if (authFailed) {
+        try {
+          await this.login();
+        } catch {
+        }
+        return await fn();
+      }
+      throw e;
+    }
+  }
+  async createEmbedding(modelName, texts, dim) {
+    return this.withAuth(async () => {
+      const resp = await this.unary(this.ensureVectorClient(), "createEmbedding", { modelName, texts, dim });
+      if (!resp.success) throw new Error(resp.message || "生成向量失败");
+      return resp.results;
+    });
+  }
+  async getIndexInfo(indexName) {
+    return this.withAuth(async () => {
+      const resp = await this.unary(this.ensureEmbeddingClient(), "getIndexInfo", { indexName });
+      if (!resp.success) throw new Error(resp.message || "获取向量索引信息失败");
+      return resp.stats;
+    });
+  }
+  async insertEmbedding(id, indexName, embedding, fields) {
+    await this.withAuth(async () => {
+      const resp = await this.unary(this.ensureEmbeddingClient(), "insertEmbedding", {
+        id,
+        indexName,
+        embedding,
+        fields
+      });
+      if (!resp.success) throw new Error(resp.message || "写入向量失败");
+    });
+  }
+  async searchEmbedding(queryEmbedding, indexName, topK) {
+    return this.withAuth(async () => {
+      const resp = await this.unary(this.ensureEmbeddingClient(), "searchEmbedding", {
+        queryEmbedding,
+        topK,
+        indexName
+      });
+      if (!resp.success) throw new Error(resp.message || "向量搜索失败");
+      return resp.results;
+    });
+  }
+  async deleteEmbedding(id, indexName) {
+    await this.withAuth(async () => {
+      const resp = await this.unary(this.ensureEmbeddingClient(), "deleteEmbedding", { id, indexName });
+      if (!resp.success) throw new Error(resp.message || "删除向量失败");
+    });
+  }
+  async getEmbeddingById(id, indexName) {
+    return this.withAuth(async () => {
+      const resp = await this.unary(this.ensureEmbeddingClient(), "getEmbeddingById", { id, indexName });
+      if (!resp.success) throw new Error(resp.message || "查询向量失败");
+      return resp;
+    });
+  }
+}
+const vectorClientCache = /* @__PURE__ */ new Map();
+function getVectorClient(host, port) {
+  const key = `${host}|${port}`;
+  let client = vectorClientCache.get(key);
+  if (!client) {
+    client = new VectorGrpcClient(host, port);
+    vectorClientCache.set(key, client);
+  }
+  return client;
+}
+let mapping = null;
+function mappingPath() {
+  return path.join(electron.app.getPath("userData"), "laoflchmd.vector.json");
+}
+function getMapping() {
+  if (!mapping) {
+    try {
+      const raw = fs.readFileSync(mappingPath(), "utf8");
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && parsed.files && parsed.entries) {
+        mapping = parsed;
+      } else {
+        mapping = { version: 1, files: {}, entries: {} };
+      }
+    } catch {
+      mapping = { version: 1, files: {}, entries: {} };
+    }
+  }
+  return mapping;
+}
+function saveMapping() {
+  try {
+    const dir = electron.app.getPath("userData");
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(mappingPath(), JSON.stringify(getMapping()), "utf8");
+  } catch {
+  }
+}
+function fileKeyOf(kind, path2, config, bucket, key) {
+  if (kind === "s3") {
+    const server = (config?.endpoint || "s3.amazonaws.com").replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+    return `s3:${server}/${bucket || ""}/${key || ""}`;
+  }
+  return `local:${path2}`;
+}
+function splitChunks(text, chunkSize, overlap) {
+  const clean = text.replace(/\r\n/g, "\n");
+  if (clean.length <= chunkSize) {
+    const t = clean.trim();
+    return t ? [t] : [];
+  }
+  const chunks = [];
+  let pos = 0;
+  while (pos < clean.length) {
+    let end = Math.min(pos + chunkSize, clean.length);
+    if (end < clean.length) {
+      const nl = clean.lastIndexOf("\n", end);
+      if (nl > pos + chunkSize * 0.5) end = nl;
+    }
+    const chunk = clean.slice(pos, end).trim();
+    if (chunk) chunks.push(chunk);
+    if (end >= clean.length) break;
+    pos = Math.max(end - overlap, pos + 1);
+  }
+  return chunks;
+}
+let hashWasmModule = null;
+function getHashWasm() {
+  if (!hashWasmModule) hashWasmModule = require("hash-wasm");
+  return hashWasmModule;
+}
+async function chunkId(blake3Hex, chunkIndex) {
+  const { blake3 } = getHashWasm();
+  const hex = await blake3(blake3Hex + ":" + chunkIndex);
+  return parseInt(hex.slice(0, 12), 16);
+}
+async function createEmbeddingsBatched(client, modelName, texts, dim) {
+  const results = [];
+  const BATCH = 50;
+  for (let i = 0; i < texts.length; i += BATCH) {
+    const batch = texts.slice(i, i + BATCH);
+    const resp = await client.createEmbedding(modelName, batch, dim);
+    if (resp.length !== batch.length) {
+      throw new Error(`向量服务返回 ${resp.length} 条，期望 ${batch.length} 条`);
+    }
+    for (const r of resp) results.push(r.embedding);
+  }
+  return results;
+}
+async function deleteVectorFile(client, indexName, fileKey) {
+  const m = getMapping();
+  const rec = m.files[fileKey];
+  if (!rec) return;
+  for (const id of rec.ids) {
+    try {
+      await client.deleteEmbedding(id, indexName);
+    } catch {
+    }
+  }
+  delete m.files[fileKey];
+  for (const id of rec.ids) delete m.entries[String(id)];
+  saveMapping();
+}
+async function deleteVectorId(client, indexName, id) {
+  const m = getMapping();
+  try {
+    await client.deleteEmbedding(id, indexName);
+  } catch {
+  }
+  delete m.entries[String(id)];
+  for (const fk of Object.keys(m.files)) {
+    const rec = m.files[fk];
+    if (rec.ids.includes(id)) {
+      rec.ids = rec.ids.filter((x) => x !== id);
+      if (!rec.ids.length) delete m.files[fk];
+    }
+  }
+  saveMapping();
+}
+function collectMarkdownFiles(dirPath) {
+  const results = [];
+  const walk = (d) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(d);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.startsWith(".")) continue;
+      const full = path.join(d, entry);
+      try {
+        const st = fs.statSync(full);
+        if (st.isDirectory()) {
+          walk(full);
+        } else if (/\.(md|markdown|mdown)$/i.test(entry)) {
+          results.push(full);
+        }
+      } catch {
+      }
+    }
+  };
+  walk(dirPath);
+  return results;
+}
+function entryBaseOf(kind, title, path2, blake3, server, bucket, key) {
+  return {
+    title,
+    path: path2,
+    kind,
+    host: kind === "local" ? os.hostname() : server,
+    server,
+    bucket,
+    key,
+    blake3
+  };
+}
+async function indexVectorLocalFile(host, port, indexName, modelName, filePath, chunkSize, overlap) {
+  try {
+    const content = fs.readFileSync(filePath, "utf8");
+    if (!content.trim()) {
+      return { ok: true, message: `跳过空文件：${path.basename(filePath)}`, count: 0 };
+    }
+    const digest = await computeBlake3(content);
+    const chunks = splitChunks(content, chunkSize, overlap);
+    if (!chunks.length) {
+      return { ok: true, message: `跳过空文件：${path.basename(filePath)}`, count: 0 };
+    }
+    const client = getVectorClient(host, port);
+    const embeddings = await createEmbeddingsBatched(client, modelName, chunks, DEFAULT_VECTOR_DIM);
+    const fileKey = fileKeyOf("local", filePath);
+    await deleteVectorFile(client, indexName, fileKey);
+    const title = path.basename(filePath, path.extname(filePath)) || path.basename(filePath);
+    const ids = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const id = await chunkId(digest, i);
+      ids.push(id);
+      await client.insertEmbedding(id, indexName, embeddings[i], {
+        title,
+        path: filePath,
+        kind: "local",
+        host: os.hostname(),
+        server: "",
+        bucket: "",
+        key: "",
+        blake3: digest,
+        chunk_index: String(i),
+        total_chunks: String(chunks.length),
+        snippet: chunks[i].slice(0, 300)
+      });
+    }
+    const m = getMapping();
+    m.files[fileKey] = { blake3: digest, ids };
+    const base = entryBaseOf("local", title, filePath, digest, "", "", "");
+    for (let i = 0; i < chunks.length; i++) {
+      m.entries[String(ids[i])] = {
+        ...base,
+        chunkIndex: i,
+        totalChunks: chunks.length,
+        snippet: chunks[i].slice(0, 300)
+      };
+    }
+    saveMapping();
+    return { ok: true, message: `已生成向量索引：${path.basename(filePath)}（${chunks.length} 块）`, count: chunks.length };
+  } catch (e) {
+    return { ok: false, message: `向量索引 ${path.basename(filePath)} 失败：${e.message || e}`, count: 0 };
+  }
+}
+async function indexVectorDir(host, port, indexName, modelName, dirPath, chunkSize, overlap, onProgress) {
+  const files = collectMarkdownFiles(dirPath);
+  let okCount = 0;
+  let firstErr = null;
+  for (let i = 0; i < files.length; i++) {
+    const filePath = files[i];
+    onProgress?.(i + 1, files.length, path.basename(filePath));
+    const res = await indexVectorLocalFile(host, port, indexName, modelName, filePath, chunkSize, overlap);
+    if (res.ok) okCount++;
+    else if (!firstErr) firstErr = res.message;
+  }
+  if (firstErr) {
+    return { ok: false, message: `完成 ${okCount}/${files.length}，出错：${firstErr}`, count: okCount };
+  }
+  return { ok: true, message: `已为 ${okCount} 个 Markdown 文件生成向量索引`, count: okCount };
+}
+async function indexVectorS3File(host, port, indexName, modelName, config, bucket, key, chunkSize, overlap) {
+  try {
+    const content = await fetchS3Content(config, bucket, key);
+    if (!content.trim()) {
+      return { ok: true, message: `跳过空文件：${path.basename(key)}`, count: 0 };
+    }
+    const digest = await computeBlake3(content);
+    const chunks = splitChunks(content, chunkSize, overlap);
+    if (!chunks.length) {
+      return { ok: true, message: `跳过空文件：${path.basename(key)}`, count: 0 };
+    }
+    const client = getVectorClient(host, port);
+    const embeddings = await createEmbeddingsBatched(client, modelName, chunks, DEFAULT_VECTOR_DIM);
+    const server = (config.endpoint || "s3.amazonaws.com").replace(/\/+$/, "");
+    const fileKey = fileKeyOf("s3", key, config, bucket, key);
+    await deleteVectorFile(client, indexName, fileKey);
+    const title = path.basename(key, path.extname(key)) || path.basename(key);
+    const ids = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const id = await chunkId(digest, i);
+      ids.push(id);
+      await client.insertEmbedding(id, indexName, embeddings[i], {
+        title,
+        path: key,
+        kind: "s3",
+        host: server,
+        server,
+        bucket,
+        key,
+        blake3: digest,
+        chunk_index: String(i),
+        total_chunks: String(chunks.length),
+        snippet: chunks[i].slice(0, 300)
+      });
+    }
+    const m = getMapping();
+    m.files[fileKey] = { blake3: digest, ids };
+    const base = entryBaseOf("s3", title, key, digest, server, bucket, key);
+    for (let i = 0; i < chunks.length; i++) {
+      m.entries[String(ids[i])] = {
+        ...base,
+        chunkIndex: i,
+        totalChunks: chunks.length,
+        snippet: chunks[i].slice(0, 300)
+      };
+    }
+    saveMapping();
+    return { ok: true, message: `已生成向量索引：${path.basename(key)}（${chunks.length} 块）`, count: chunks.length };
+  } catch (e) {
+    return { ok: false, message: `向量索引 ${path.basename(key)} 失败：${e.message || e}`, count: 0 };
+  }
+}
+async function searchVector(host, port, indexName, modelName, query, topK) {
+  try {
+    const client = getVectorClient(host, port);
+    const qEmb = await client.createEmbedding(modelName, [query], DEFAULT_VECTOR_DIM);
+    if (!qEmb.length) throw new Error("查询向量生成失败");
+    const hits = await client.searchEmbedding(qEmb[0].embedding, indexName, topK);
+    const m = getMapping();
+    const results = hits.map((h) => {
+      const entry = m.entries[String(h.id)];
+      return {
+        docId: String(h.id),
+        // Cosine 距离 → 相似度：1 - distance（clip 下限 0）
+        score: Math.max(0, 1 - h.distance),
+        fields: entry ? {
+          title: entry.title,
+          path: entry.path,
+          kind: entry.kind,
+          host: entry.host,
+          server: entry.server,
+          bucket: entry.bucket,
+          key: entry.key,
+          blake3: entry.blake3,
+          chunk_index: String(entry.chunkIndex),
+          total_chunks: String(entry.totalChunks),
+          snippet: entry.snippet
+        } : {}
+      };
+    });
+    return { ok: true, message: "", results };
+  } catch (e) {
+    return { ok: false, message: e.message || "向量搜索失败", results: [] };
+  }
+}
+async function getVectorIndexInfo(host, port, indexName) {
+  try {
+    const client = getVectorClient(host, port);
+    const stats = await client.getIndexInfo(indexName);
+    return { ok: true, message: "", stats };
+  } catch (e) {
+    return { ok: false, message: e.message || "获取向量索引信息失败", stats: null };
+  }
+}
+function registerVectorIndexHandlers() {
+  electron.ipcMain.handle("vector:getInfo", async (_e, host, port, indexName) => {
+    return getVectorIndexInfo(host, port, indexName);
+  });
+  electron.ipcMain.handle(
+    "vector:indexLocal",
+    async (_e, host, port, indexName, modelName, filePath, chunkSize, overlap) => {
+      return indexVectorLocalFile(
+        host,
+        port,
+        indexName,
+        modelName,
+        filePath,
+        chunkSize || DEFAULT_CHUNK_SIZE,
+        overlap === void 0 ? DEFAULT_CHUNK_OVERLAP : overlap
+      );
+    }
+  );
+  electron.ipcMain.handle(
+    "vector:indexDir",
+    async (e, host, port, indexName, modelName, dirPath, chunkSize, overlap) => {
+      return indexVectorDir(
+        host,
+        port,
+        indexName,
+        modelName,
+        dirPath,
+        chunkSize || DEFAULT_CHUNK_SIZE,
+        overlap === void 0 ? DEFAULT_CHUNK_OVERLAP : overlap,
+        (done, total, fileName) => {
+          e.sender.send("vector:progress", { done, total, fileName });
+        }
+      );
+    }
+  );
+  electron.ipcMain.handle(
+    "vector:indexS3",
+    async (_e, host, port, indexName, modelName, config, bucket, key, chunkSize, overlap) => {
+      return indexVectorS3File(
+        host,
+        port,
+        indexName,
+        modelName,
+        config,
+        bucket,
+        key,
+        chunkSize || DEFAULT_CHUNK_SIZE,
+        overlap === void 0 ? DEFAULT_CHUNK_OVERLAP : overlap
+      );
+    }
+  );
+  electron.ipcMain.handle(
+    "vector:search",
+    async (_e, host, port, indexName, modelName, query, topK) => {
+      return searchVector(host, port, indexName, modelName, query, topK || DEFAULT_SEARCH_LIMIT);
+    }
+  );
+  electron.ipcMain.handle(
+    "vector:deleteFile",
+    async (_e, host, port, indexName, kind, path2, config, bucket, key) => {
+      try {
+        const client = getVectorClient(host, port);
+        const fileKey = fileKeyOf(kind, path2, config, bucket, key);
+        await deleteVectorFile(client, indexName, fileKey);
+        return { ok: true, message: "已删除该文件的向量索引" };
+      } catch (e) {
+        return { ok: false, message: e.message || "删除向量索引失败" };
+      }
+    }
+  );
+  electron.ipcMain.handle(
+    "vector:deleteId",
+    async (_e, host, port, indexName, id) => {
+      try {
+        const num = Number(id);
+        if (!/^\d+$/.test(String(num))) {
+          return { ok: false, message: `无效的向量 ID：${id}` };
+        }
+        const client = getVectorClient(host, port);
+        await deleteVectorId(client, indexName, num);
+        return { ok: true, message: "已删除该向量条目" };
+      } catch (e) {
+        return { ok: false, message: e.message || "删除向量条目失败" };
+      }
+    }
+  );
+  electron.ipcMain.handle("vector:checkFiles", async (_e, paths) => {
+    const m = getMapping();
+    const results = {};
+    for (const p of paths.filter(Boolean)) {
+      results[p] = !!m.files[`local:${p}`];
+    }
+    return { ok: true, message: "", results };
+  });
+  electron.ipcMain.handle(
+    "vector:checkS3Files",
+    async (_e, config, bucket, keys) => {
+      const m = getMapping();
+      const results = {};
+      for (const key of keys.filter(Boolean)) {
+        results[key] = !!m.files[fileKeyOf("s3", key, config, bucket, key)];
+      }
+      return { ok: true, message: "", results };
+    }
+  );
+}
 const VERSION_NOTES = [
+  {
+    version: "1.0.5",
+    date: "2026-10-20",
+    title: "索引与状态栏增强",
+    changes: [
+      "索引表名可在全局设置中配置，默认 md_docs，创建索引/检索/删除/标签检测均使用该索引名",
+      "目录生成索引时逐文件显示蓝色进度提示（多条堆叠、8 秒后消失），完成后绿色提示汇总结果",
+      "内容为空的 Markdown 文件自动跳过索引，也不参与已索引检测",
+      "子目录「全文」标签修复：按文件自身路径精确判断索引状态",
+      "「检查索引」结果提示移入主界面右上角通知",
+      "目录树交互优化：点击目录即选中并展开，点击三角号同样可展开收起",
+      "底部状态栏显示当前打开文件地址：本地文件显示主机名+绝对路径，S3 文件显示完整协议与地址",
+      "已索引标签文字由「已索引」改为「全文」"
+    ]
+  },
+  {
+    version: "1.0.4",
+    date: "2026-10-20",
+    title: "全文检索与界面体验升级",
+    changes: [
+      "新增「全文检索」：集成 laoflchdb-rust 索引服务，支持 gRPC/REST 双协议切换（默认端口 29777/38080）",
+      "本地文件树与 S3 右键菜单支持「生成索引」，目录可递归索引并逐文件显示进度",
+      "索引以 BLAKE3 摘要去重，同一文件仅保留一条索引；内容为空的文件自动跳过",
+      "已索引的 Markdown 文件显示「全文」标签，目录展开时自动检测索引状态",
+      "全文检索结果卡片支持打开文档与删除索引条目（仅删索引，不影响原文件）",
+      "编辑 / 实时预览 / 预览三个界面统一底部状态栏，高度对齐，按实际有效字符统计",
+      "编辑与预览切换时保持光标所在行位置一致",
+      "索引结果提示改为主界面右上角通知，多条依次堆叠显示、可点击关闭",
+      "目录树交互优化：点击目录即选中并展开，点击三角号同样可展开收起"
+    ]
+  },
   {
     version: "1.0.3",
     date: "2026-08-25",
@@ -1554,6 +2464,7 @@ electron.app.whenReady().then(() => {
     createWindow();
     registerS3Handlers();
     registerIndexSearchHandlers();
+    registerVectorIndexHandlers();
     updateSplashProgress(65, "初始化服务...");
   }, 200);
   electron.app.on("activate", () => {

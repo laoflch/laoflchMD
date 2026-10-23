@@ -1,16 +1,20 @@
 <script setup lang="ts">
 import { useEditorStore, type ViewMode } from '../stores/editor'
 import { useFindReplace } from '../composables/useFindReplace'
+import { useSettingsStore } from '../stores/settings'
 
 const store = useEditorStore()
 const findReplace = useFindReplace()
+const settings = useSettingsStore()
 
 defineProps<{
   showSidebar: boolean
+  showSearch: boolean
 }>()
 
 defineEmits<{
   'toggle-sidebar': []
+  'toggle-search': []
   'about': []
 }>()
 
@@ -50,6 +54,15 @@ async function handleSave() {
 
 async function handleSaveAs() {
   await store.saveFileAs()
+}
+
+// 工具栏查找按钮：再点一次则关闭查找栏
+function toggleFind() {
+  if (findReplace.isOpen.value) {
+    findReplace.close()
+  } else {
+    findReplace.openFind()
+  }
 }
 </script>
 
@@ -139,9 +152,9 @@ async function handleSaveAs() {
     <div class="toolbar-spacer"></div>
 
     <div class="toolbar-group">
-      <button class="tool-btn" title="查找 (Ctrl+F)" @click="findReplace.openFind()">
+      <button class="tool-btn" :class="{ active: findReplace.isOpen.value }" title="查找 (Ctrl+F)" @click="toggleFind">
         <span class="tool-icon">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#569cd6" stroke-width="1.5">
+          <svg class="find-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#569cd6" stroke-width="1.5">
             <circle cx="7" cy="7" r="4.5"/>
             <path d="M10.5 10.5 14 14"/>
           </svg>
@@ -159,6 +172,20 @@ async function handleSaveAs() {
           </svg>
         </span>
         <span class="tool-label">关于</span>
+      </button>
+      <button
+        v-if="settings.indexEnabled"
+        class="tool-btn search-toggle"
+        :class="{ active: showSearch }"
+        :title="showSearch ? '关闭索引面板' : '打开索引面板'"
+        @click="$emit('toggle-search')"
+      >
+        <span class="tool-icon search-arrow">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#569cd6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M6 3.5 11.5 8 6 12.5"/>
+          </svg>
+        </span>
+        <span class="tool-label">索引</span>
       </button>
     </div>
   </div>
@@ -231,6 +258,11 @@ async function handleSaveAs() {
   color: #ffffff;
 }
 
+/* 查找按钮：打开时高亮 active（accent 背景），图标颜色随之反转为背景色（白色） */
+.tool-btn.active .find-icon {
+  stroke: #ffffff;
+}
+
 .formatting-btn {
   padding: 4px 6px;
   min-width: 28px;
@@ -252,5 +284,20 @@ async function handleSaveAs() {
 
 .formatting-btn .tool-icon {
   font-size: 13px;
+}
+
+/* 展开索引右侧边栏的箭头按钮：active 时箭头反向 */
+.search-toggle.active .search-arrow {
+  transform: rotate(180deg);
+}
+
+/* 索引箭头图标：打开时与查找按钮一致，颜色反转为底色（白色） */
+.search-toggle.active .search-arrow svg {
+  stroke: #ffffff;
+}
+
+.search-arrow {
+  display: inline-flex;
+  transition: transform 0.2s ease;
 }
 </style>

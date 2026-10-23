@@ -4,8 +4,10 @@ import { useDragDivider } from '../composables/useDragDivider'
 import { useEditorDom } from '../composables/useEditorDom'
 import { useFindReplace } from '../composables/useFindReplace'
 import { useEditorStore } from '../stores/editor'
+import { useS3Store } from '../stores/s3'
 
 const store = useEditorStore()
+const s3 = useS3Store()
 const editorDom = useEditorDom()
 const findReplace = useFindReplace()
 const { isOpen, showReplace, query, replaceText, matches, currentIndex, caseSensitive } = useFindReplace()
@@ -48,8 +50,27 @@ function handleCtrlWheel(e: WheelEvent) {
   }
 }
 
+// 本机主机名（本地文件地址显示用）
+const hostname = ref('')
+
+// 当前打开文件地址：本地 = 主机名 + 绝对路径；S3 = 完整协议与地址
+const statusPath = computed(() => {
+  if (store.s3Source) {
+    const cfg = s3.plainConfig()
+    const endpoint = (cfg.endpoint || 's3.amazonaws.com').replace(/^https?:\/\//i, '')
+    return `s3://${endpoint}/${store.s3Source.bucket}/${store.s3Source.key}`
+  }
+  if (store.filePath) {
+    return `${hostname.value}${store.filePath}`
+  }
+  return ''
+})
+
 onMounted(() => {
   document.addEventListener('wheel', handleCtrlWheel, { passive: false })
+  if (window.api.getHostname) {
+    window.api.getHostname().then((h) => (hostname.value = h)).catch(() => {})
+  }
 })
 
 onUnmounted(() => {
@@ -72,6 +93,142 @@ const { isDragging, startDrag: onDividerMouseDown } = useDragDivider({
 })
 
 // ——— 查找替换 ———
+
+// ——— 预览模式查找替换（基于渲染后 DOM 文本节点） ———
+// 渲染后的 HTML 文本与源 Markdown 不一致（语法被转换），无法用源偏移映射；
+// 因此预览模式直接在 contenteditable DOM 的文本节点上查找/高亮，
+// 替换则改写 DOM 后经 setContentFromHtml 回写 Markdown（重新渲染后自动恢复高亮）。
+const previewMarkEls = ref<HTMLElement[]>([])
+const previewCurrent = ref(-1)
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+// 移除预览 DOM 中已包裹的查找标记（还原为纯文本节点）
+function removePreviewMarks() {
+  const root = editableRef.value
+  if (!root) return
+  const marks = root.querySelectorAll('mark.preview-find')
+  marks.forEach((m) => {
+    const parent = m.parentNode
+    if (!parent) return
+    parent.replaceChild(document.createTextNode(m.textContent || ''), m)
+  })
+  root.normalize()
+  previewMarkEls.value = []
+  previewCurrent.value = -1
+}
+
+// 在预览 DOM 文本节点上按 query 查找所有匹配并包裹 <mark>（单个文本节点内匹配）
+function applyPreviewFind() {
+  const root = editableRef.value
+  if (!root || store.viewMode !== 'preview') return
+  const prevIdx = previewCurrent.value
+  removePreviewMarks()
+  const q = query.value
+  if (!isOpen.value || !q) return
+  const flags = caseSensitive.value ? 'g' : 'gi'
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  const textNodes: Text[] = []
+  let node: Node | null
+  while ((node = walker.nextNode())) {
+    if (node.textContent && node.textContent.length) textNodes.push(node as Text)
+  }
+  const marks: HTMLElement[] = []
+  for (const tn of textNodes) {
+    const text = tn.textContent || ''
+    const re = new RegExp(escapeRegExp(q), flags)
+    const ranges: [number, number][] = []
+    let m: RegExpExecArray | null
+    while ((m = re.exec(text)) !== null) {
+      if (m[0].length === 0) {
+        re.lastIndex++
+        continue
+      }
+      ranges.push([m.index, m.index + m[0].length])
+    }
+    if (!ranges.length) continue
+    // 一次性重建该文本节点：前后文本 + 匹配段包裹 <mark>
+    const frag = document.createDocumentFragment()
+    let last = 0
+    for (const [s, e] of ranges) {
+      if (s > last) frag.appendChild(document.createTextNode(text.slice(last, s)))
+      const mark = document.createElement('mark')
+      mark.className = 'preview-find'
+      mark.textContent = text.slice(s, e)
+      marks.push(mark)
+      frag.appendChild(mark)
+      last = e
+    }
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)))
+    tn.parentNode?.replaceChild(frag, tn)
+  }
+  previewMarkEls.value = marks
+  previewCurrent.value = marks.length ? Math.min(Math.max(prevIdx, 0), marks.length - 1) : -1
+  // 标记当前匹配
+  previewMarkEls.value.forEach((m, i) => m.classList.toggle('current', i === previewCurrent.value))
+  scrollPreviewToCurrent()
+}
+
+// 把当前匹配滚动到预览可视区域（基于视口坐标差计算滚动量）
+function scrollPreviewToCurrent() {
+  const mark = previewMarkEls.value[previewCurrent.value]
+  const scroll = previewScrollRef.value
+  if (!mark || !scroll) return
+  const markTop = mark.getBoundingClientRect().top
+  const scrollTop = scroll.getBoundingClientRect().top
+  scroll.scrollTop += markTop - scrollTop - scroll.clientHeight / 2
+}
+
+// 预览模式前后导航（循环）
+function previewStep(dir: number) {
+  const len = previewMarkEls.value.length
+  if (!len) return
+  previewCurrent.value = (((previewCurrent.value + dir) % len) + len) % len
+  previewMarkEls.value.forEach((m, i) => m.classList.toggle('current', i === previewCurrent.value))
+  scrollPreviewToCurrent()
+}
+
+// 预览模式替换当前匹配：改写 DOM → 回写 Markdown（重新渲染后高亮自动恢复）
+function replacePreviewCurrent() {
+  const mark = previewMarkEls.value[previewCurrent.value]
+  if (!mark) return
+  mark.textContent = replaceText.value
+  syncPreviewContent()
+  // 若替换结果与源相同（不会触发重渲染），仍显式刷新高亮
+  nextTick(() => {
+    if (isOpen.value && store.viewMode === 'preview') applyPreviewFind()
+  })
+}
+
+// 预览模式全部替换
+function replaceAllPreview() {
+  if (!previewMarkEls.value.length) return
+  previewMarkEls.value.forEach((m) => {
+    m.textContent = replaceText.value
+  })
+  syncPreviewContent()
+  nextTick(() => {
+    if (isOpen.value && store.viewMode === 'preview') applyPreviewFind()
+  })
+}
+
+// 把预览 DOM 当前内容回写为 Markdown（走 store.setContentFromHtml，进入撤销历史并标记未保存）
+function syncPreviewContent() {
+  const editable = editableRef.value
+  if (!editable) return
+  store.setContentFromHtml(editable.innerHTML)
+}
+
+// 计数显示：预览模式用 DOM 匹配数，编辑/实时模式用源内容偏移匹配数
+const countText = computed(() => {
+  if (store.viewMode === 'preview') {
+    const total = previewMarkEls.value.length
+    return total ? `${previewCurrent.value + 1}/${total}` : '0/0'
+  }
+  return matches.value.length ? `${currentIndex.value + 1}/${matches.value.length}` : '0/0'
+})
 
 function escapeHtml(s: string): string {
   return s
@@ -98,20 +255,44 @@ const highlightHtml = computed(() => {
   return html
 })
 
-// 打开 / 内容或查询变化 / 视图模式切换时重算匹配
+// 打开 / 内容或查询变化 / 视图模式切换时重算匹配（编辑/实时模式）
 watch([isOpen, query, () => store.content, () => store.viewMode], () => {
   if (!isOpen.value) return
   findReplace.recompute(store.content)
 })
 
-// 打开时聚焦查找输入框并定位到第一个匹配
+// 查询 / 大小写 / 视图模式变化时刷新预览模式高亮
+watch([query, caseSensitive, () => store.viewMode], () => {
+  if (isOpen.value && store.viewMode === 'preview') {
+    nextTick(() => applyPreviewFind())
+  }
+})
+
+// 渲染完成（含 Shiki 异步替换）后重新应用预览模式高亮
+watch(
+  () => store.renderedHtml,
+  () => {
+    if (isOpen.value && store.viewMode === 'preview') {
+      nextTick(() => applyPreviewFind())
+    }
+  }
+)
+
+// 打开时聚焦查找输入框并定位到第一个匹配；预览模式在渲染 DOM 上高亮
 watch(isOpen, async (open) => {
-  if (!open) return
+  if (!open) {
+    if (store.viewMode === 'preview') removePreviewMarks()
+    return
+  }
   await nextTick()
   findInputRef.value?.focus()
   findInputRef.value?.select()
-  findReplace.recompute(store.content)
-  syncFindScroll()
+  if (store.viewMode === 'preview') {
+    applyPreviewFind()
+  } else {
+    findReplace.recompute(store.content)
+    nextTick(syncFindScroll)
+  }
 })
 
 // textarea 滚动时同步高亮层
@@ -140,13 +321,22 @@ function syncFindScroll() {
 }
 
 function goNext() {
+  if (store.viewMode === 'preview') {
+    previewStep(1)
+    return
+  }
   findReplace.next()
-  syncFindScroll()
+  // 等 v-html 高亮层重新渲染后，mark.current 才是新位置
+  nextTick(syncFindScroll)
 }
 
 function goPrev() {
+  if (store.viewMode === 'preview') {
+    previewStep(-1)
+    return
+  }
   findReplace.prev()
-  syncFindScroll()
+  nextTick(syncFindScroll)
 }
 
 function onFindKeydown(e: KeyboardEvent) {
@@ -164,12 +354,21 @@ function onFindKeydown(e: KeyboardEvent) {
 }
 
 function onReplaceCurrent() {
+  // 预览模式：直接改写预览 DOM 后回写 Markdown
+  if (store.viewMode === 'preview') {
+    replacePreviewCurrent()
+    return
+  }
   const result = findReplace.replaceCurrent(store.content)
   if (result !== null) store.setContent(result)
   nextTick(syncFindScroll)
 }
 
 function onReplaceAll() {
+  if (store.viewMode === 'preview') {
+    replaceAllPreview()
+    return
+  }
   const result = findReplace.replaceAll(store.content)
   if (result !== null) store.setContent(result)
   nextTick(syncFindScroll)
@@ -418,7 +617,7 @@ watch(
           spellcheck="false"
           @keydown="onFindKeydown"
         />
-        <span class="find-count">{{ matches.length ? (currentIndex + 1) + '/' + matches.length : '0/0' }}</span>
+        <span class="find-count">{{ countText }}</span>
         <button class="find-btn" title="上一个 (Shift+Enter)" @click="goPrev">↑</button>
         <button class="find-btn" title="下一个 (Enter)" @click="goNext">↓</button>
         <button class="find-btn" :class="{ active: caseSensitive }" title="区分大小写" @click="findReplace.toggleCase()">Aa</button>
@@ -464,6 +663,7 @@ watch(
         <span class="status-left" :class="{ modified: store.isModified }">
           {{ store.isModified ? '● 未保存' : '✓ 已保存' }}
         </span>
+        <span v-if="statusPath" class="status-path" :title="statusPath">{{ statusPath }}</span>
         <span class="status-right">{{ sourceCharCount }} 字符</span>
       </div>
     </div>
@@ -486,6 +686,7 @@ watch(
         <span class="status-left" :class="{ modified: store.isModified }">
           {{ store.isModified ? '● 未保存' : '✓ 已保存' }}
         </span>
+        <span v-if="statusPath" class="status-path" :title="statusPath">{{ statusPath }}</span>
         <span class="status-right">{{ previewCharCount }} 字符</span>
       </div>
     </div>
@@ -523,6 +724,7 @@ watch(
         <span class="status-left" :class="{ modified: store.isModified }">
           {{ store.isModified ? '● 未保存' : '✓ 已保存' }}
         </span>
+        <span v-if="statusPath" class="status-path" :title="statusPath">{{ statusPath }}</span>
         <span class="status-right">
           <span class="status-count">源 {{ sourceCharCount }} 字符</span>
           <span class="status-count">预览 {{ previewCharCount }} 字符</span>
@@ -638,14 +840,31 @@ watch(
   color: var(--text-primary);
 }
 
-.hl-layer mark {
+/* 编辑/实时模式高亮层由 v-html 动态生成（无 data-v 属性），须用 :deep */
+:deep(.hl-layer mark) {
   background: rgba(255, 213, 79, 0.4);
   color: var(--text-primary);
   border-radius: 2px;
 }
 
-.hl-layer mark.current {
-  background: rgba(255, 152, 0, 0.6);
+/* 当前选中的匹配：主题色实底 + 白字，与普通匹配明显区分 */
+:deep(.hl-layer mark.current) {
+  background: var(--accent-color);
+  color: #ffffff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+
+/* 预览模式查找高亮（运行时包裹在 contenteditable DOM 中，须用 :deep） */
+:deep(.preview-content mark.preview-find) {
+  background: rgba(255, 213, 79, 0.4);
+  color: var(--text-primary);
+  border-radius: 2px;
+}
+
+:deep(.preview-content mark.preview-find.current) {
+  background: var(--accent-color);
+  color: #ffffff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
 }
 
 .live-edit .hl-layer {
@@ -740,6 +959,16 @@ watch(
 
 .status-bar .status-left.modified {
   color: #f0ad4e;
+}
+
+.status-bar .status-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+  color: var(--text-muted);
 }
 
 .status-bar .status-right {

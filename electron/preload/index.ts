@@ -91,30 +91,124 @@ contextBridge.exposeInMainWorld('api', {
   s3DeleteObject: (config: any, bucket: string, key: string) =>
     ipcRenderer.invoke('s3:deleteObject', config, bucket, key),
 
+  // 本机主机名
+  getHostname: () => ipcRenderer.invoke('app:hostname'),
+
   // Full-text search (laoflchdb-rust)
-  indexEnsure: (protocol: 'grpc' | 'rest', host: string, port: string) =>
-    ipcRenderer.invoke('index:ensure', protocol, host, port),
+  indexEnsure: (protocol: 'grpc' | 'rest', host: string, port: string, indexName: string) =>
+    ipcRenderer.invoke('index:ensure', protocol, host, port, indexName),
   indexSearch: (
     protocol: 'grpc' | 'rest',
     host: string,
     port: string,
+    indexName: string,
     query: string,
     limit?: number
-  ) => ipcRenderer.invoke('index:search', protocol, host, port, query, limit),
-  indexLocalFile: (protocol: 'grpc' | 'rest', host: string, port: string, filePath: string) =>
-    ipcRenderer.invoke('index:indexLocal', protocol, host, port, filePath),
-  indexDir: (protocol: 'grpc' | 'rest', host: string, port: string, dirPath: string) =>
-    ipcRenderer.invoke('index:indexDir', protocol, host, port, dirPath),
+  ) => ipcRenderer.invoke('index:search', protocol, host, port, indexName, query, limit),
+  indexLocalFile: (protocol: 'grpc' | 'rest', host: string, port: string, indexName: string, filePath: string) =>
+    ipcRenderer.invoke('index:indexLocal', protocol, host, port, indexName, filePath),
+  indexDir: (protocol: 'grpc' | 'rest', host: string, port: string, indexName: string, dirPath: string) =>
+    ipcRenderer.invoke('index:indexDir', protocol, host, port, indexName, dirPath),
   indexS3File: (
     protocol: 'grpc' | 'rest',
     host: string,
     port: string,
+    indexName: string,
     config: any,
     bucket: string,
     key: string
-  ) => ipcRenderer.invoke('index:indexS3', protocol, host, port, config, bucket, key),
-  indexCheckFiles: (protocol: 'grpc' | 'rest', host: string, port: string, paths: string[]) =>
-    ipcRenderer.invoke('index:checkFiles', protocol, host, port, paths),
-  indexDeleteDoc: (protocol: 'grpc' | 'rest', host: string, port: string, docId: string, fields?: Record<string, string>) =>
-    ipcRenderer.invoke('index:deleteDoc', protocol, host, port, docId, fields)
+  ) => ipcRenderer.invoke('index:indexS3', protocol, host, port, indexName, config, bucket, key),
+  indexCheckFiles: (protocol: 'grpc' | 'rest', host: string, port: string, indexName: string, paths: string[]) =>
+    ipcRenderer.invoke('index:checkFiles', protocol, host, port, indexName, paths),
+  indexCheckS3Files: (
+    protocol: 'grpc' | 'rest',
+    host: string,
+    port: string,
+    indexName: string,
+    config: any,
+    bucket: string,
+    keys: string[]
+  ) => ipcRenderer.invoke('index:checkS3Files', protocol, host, port, indexName, config, bucket, keys),
+  indexGetDoc: (
+    protocol: 'grpc' | 'rest',
+    host: string,
+    port: string,
+    indexName: string,
+    kind: 'local' | 's3',
+    path: string,
+    config?: any,
+    bucket?: string,
+    key?: string
+  ) => ipcRenderer.invoke('index:getDoc', protocol, host, port, indexName, kind, path, config, bucket, key),
+  indexDeleteDoc: (protocol: 'grpc' | 'rest', host: string, port: string, indexName: string, docId: string, fields?: Record<string, string>) =>
+    ipcRenderer.invoke('index:deleteDoc', protocol, host, port, indexName, docId, fields),
+  // 目录建索引进度事件（主进程逐文件推送）
+  onIndexProgress: (callback: (progress: { done: number; total: number; fileName: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, progress: { done: number; total: number; fileName: string }) =>
+      callback(progress)
+    ipcRenderer.on('index:progress', handler)
+    return () => ipcRenderer.removeListener('index:progress', handler)
+  },
+
+  // Vector text index (laoflchdb-rust, gRPC)
+  vectorGetInfo: (host: string, port: string, indexName: string) =>
+    ipcRenderer.invoke('vector:getInfo', host, port, indexName),
+  vectorIndexLocal: (
+    host: string,
+    port: string,
+    indexName: string,
+    modelName: string,
+    filePath: string,
+    chunkSize?: number,
+    overlap?: number
+  ) => ipcRenderer.invoke('vector:indexLocal', host, port, indexName, modelName, filePath, chunkSize, overlap),
+  vectorIndexDir: (
+    host: string,
+    port: string,
+    indexName: string,
+    modelName: string,
+    dirPath: string,
+    chunkSize?: number,
+    overlap?: number
+  ) => ipcRenderer.invoke('vector:indexDir', host, port, indexName, modelName, dirPath, chunkSize, overlap),
+  vectorIndexS3: (
+    host: string,
+    port: string,
+    indexName: string,
+    modelName: string,
+    config: any,
+    bucket: string,
+    key: string,
+    chunkSize?: number,
+    overlap?: number
+  ) => ipcRenderer.invoke('vector:indexS3', host, port, indexName, modelName, config, bucket, key, chunkSize, overlap),
+  vectorSearch: (
+    host: string,
+    port: string,
+    indexName: string,
+    modelName: string,
+    query: string,
+    topK?: number
+  ) => ipcRenderer.invoke('vector:search', host, port, indexName, modelName, query, topK),
+  vectorDeleteFile: (
+    host: string,
+    port: string,
+    indexName: string,
+    kind: 'local' | 's3',
+    path: string,
+    config?: any,
+    bucket?: string,
+    key?: string
+  ) => ipcRenderer.invoke('vector:deleteFile', host, port, indexName, kind, path, config, bucket, key),
+  vectorDeleteId: (host: string, port: string, indexName: string, id: string | number) =>
+    ipcRenderer.invoke('vector:deleteId', host, port, indexName, id),
+  vectorCheckFiles: (paths: string[]) => ipcRenderer.invoke('vector:checkFiles', paths),
+  vectorCheckS3Files: (config: any, bucket: string, keys: string[]) =>
+    ipcRenderer.invoke('vector:checkS3Files', config, bucket, keys),
+  onVectorProgress: (callback: (progress: { done: number; total: number; fileName: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, progress: { done: number; total: number; fileName: string }) =>
+      callback(progress)
+    ipcRenderer.on('vector:progress', handler)
+    return () => ipcRenderer.removeListener('vector:progress', handler)
+  }
 })

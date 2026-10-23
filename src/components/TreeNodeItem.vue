@@ -8,14 +8,17 @@ const props = defineProps<{
   selectedPath: string | null
   depth: number
   renamingPath: string | null
-  indexed: boolean
+  indexedPaths: Set<string>
+  vectorIndexedPaths: Set<string>
 }>()
 
 const emit = defineEmits<{
   select: [entry: FileEntry]
+  toggleExpand: [entry: FileEntry]
   contextmenu: [event: MouseEvent, entry: FileEntry]
   renameComplete: [oldPath: string, newPath: string | null]
   childrenLoaded: [entries: FileEntry[]]
+  indexClick: [entry: FileEntry]
 }>()
 
 const children = ref<FileEntry[]>([])
@@ -23,6 +26,14 @@ const childLoading = ref(false)
 
 const isExpanded = computed(() => props.expanded.has(props.entry.path))
 const isSelected = computed(() => props.selectedPath === props.entry.path)
+// 每个节点按自身路径判断是否已索引（避免子节点错误继承父节点的索引状态）
+const isIndexed = computed(
+  () => props.entry.isMarkdown && !props.entry.isDirectory && props.indexedPaths.has(props.entry.path)
+)
+// 是否已生成向量索引
+const isVectorIndexed = computed(
+  () => props.entry.isMarkdown && !props.entry.isDirectory && props.vectorIndexedPaths.has(props.entry.path)
+)
 
 // Context menu state for this node
 const showRenameInput = ref(false)
@@ -41,16 +52,14 @@ async function loadChildren() {
 }
 
 function handleClick() {
-  if (props.entry.isDirectory) {
-    // Emit select so parent can handle expand/collapse
-    emit('select', props.entry)
-    // Also load children if expanded
-    if (!isExpanded.value) {
-      loadChildren()
-    }
-  } else {
-    emit('select', props.entry)
-  }
+  // 单击：目录由父组件处理选中+展开；文件打开
+  emit('select', props.entry)
+}
+
+// 点击三角号：仅目录可展开/收起
+function handleToggleExpand() {
+  if (!props.entry.isDirectory) return
+  emit('toggleExpand', props.entry)
 }
 
 function handleContextMenu(event: MouseEvent) {
@@ -61,6 +70,11 @@ function handleContextMenu(event: MouseEvent) {
 if (props.entry.isDirectory && isExpanded.value) {
   loadChildren()
 }
+
+// 目录被展开时加载子节点
+watch(isExpanded, (val) => {
+  if (val) loadChildren()
+})
 
 // Watch for rename trigger from parent
 watch(() => props.renamingPath, (newVal) => {
@@ -73,6 +87,10 @@ function handleChildSelect(entry: FileEntry) {
   emit('select', entry)
 }
 
+function handleChildToggleExpand(entry: FileEntry) {
+  emit('toggleExpand', entry)
+}
+
 function handleChildContextMenu(event: MouseEvent, entry: FileEntry) {
   emit('contextmenu', event, entry)
 }
@@ -83,6 +101,10 @@ function handleChildRenameComplete(oldPath: string, newPath: string | null) {
 
 function handleChildChildrenLoaded(entries: FileEntry[]) {
   emit('childrenLoaded', entries)
+}
+
+function handleChildIndexClick(entry: FileEntry) {
+  emit('indexClick', entry)
 }
 
 function handleRenameKeydown(e: KeyboardEvent) {
@@ -131,7 +153,7 @@ defineExpose({ startRename })
       @contextmenu="handleContextMenu"
     >
       <!-- Expand/collapse arrow for directories -->
-      <span v-if="entry.isDirectory" class="tree-arrow" :class="{ expanded: isExpanded }">
+      <span v-if="entry.isDirectory" class="tree-arrow" :class="{ expanded: isExpanded }" @click.stop="handleToggleExpand">
         <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
           <path d="M6 4l4 4-4 4"/>
         </svg>
@@ -167,7 +189,13 @@ defineExpose({ startRename })
         autofocus
       />
       <span v-else class="tree-label">{{ entry.name }}</span>
-      <span v-if="indexed && entry.isMarkdown && !entry.isDirectory" class="indexed-tag">已索引</span>
+      <span
+        v-if="isIndexed"
+        class="indexed-tag"
+        title="查看索引详情"
+        @click.stop="emit('indexClick', props.entry)"
+      >全文</span>
+      <span v-if="isVectorIndexed" class="indexed-tag vector" title="已生成向量索引">向量</span>
     </div>
 
     <!-- Children (for directories) -->
@@ -184,12 +212,15 @@ defineExpose({ startRename })
         :expanded="expanded"
         :selected-path="selectedPath"
         :renaming-path="renamingPath"
-        :indexed="indexed"
+        :indexed-paths="indexedPaths"
+        :vector-indexed-paths="vectorIndexedPaths"
         :depth="depth + 1"
         @select="handleChildSelect"
+        @toggle-expand="handleChildToggleExpand"
         @contextmenu="handleChildContextMenu"
         @rename-complete="handleChildRenameComplete"
         @children-loaded="handleChildChildrenLoaded"
+        @index-click="handleChildIndexClick"
       />
     </div>
   </div>
@@ -269,6 +300,11 @@ defineExpose({ startRename })
 
 .tree-node-row.is-selected .indexed-tag {
   background: rgba(255, 255, 255, 0.25);
+}
+
+/* 向量索引标签：蓝色背景区分全文（绿色） */
+.indexed-tag.vector {
+  background: #409eff;
 }
 
 .rename-input {

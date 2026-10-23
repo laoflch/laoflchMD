@@ -1,13 +1,163 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useS3Store } from '../stores/s3'
 import { useEditorStore } from '../stores/editor'
 import { useSettingsStore } from '../stores/settings'
-import type { S3ObjectEntry } from '../types'
+import { useToastStore } from '../stores/toast'
+import type { S3ObjectEntry, IndexSearchResult } from '../types'
+import IndexInfoDialog from './IndexInfoDialog.vue'
 
 const s3 = useS3Store()
 const editor = useEditorStore()
 const settings = useSettingsStore()
+const toastStore = useToastStore()
+
+// 全文检索：当前目录下已生成索引的 S3 对象 Key 集合（显示「全文」标签）
+const indexedKeys = ref<Set<string>>(new Set())
+let checkSeq = 0
+
+async function checkIndexed(keys: string[]) {
+  const mdKeys = keys.filter((k) => k && !k.endsWith('/'))
+  if (mdKeys.length === 0) return
+  const seq = ++checkSeq
+  try {
+    const protocol = settings.indexProtocol
+    const host = protocol === 'grpc' ? settings.grpcHost : settings.restHost
+    const port = protocol === 'grpc' ? settings.grpcPort : settings.restPort
+    const res = await window.api.indexCheckS3Files(
+      protocol,
+      host,
+      port,
+      settings.indexName,
+      s3.plainConfig(),
+      s3.currentBucket!,
+      mdKeys
+    )
+    if (seq !== checkSeq) return // 丢弃过期结果
+    if (!res.ok) return
+    const next = new Set<string>()
+    for (const [key, indexed] of Object.entries(res.results)) {
+      if (indexed) next.add(key)
+    }
+    indexedKeys.value = next
+  } catch {
+    // 检测失败不阻塞浏览
+  }
+}
+
+// 向量索引：当前目录下已生成向量索引的 S3 对象 Key 集合（显示「向量」标签）
+const vectorIndexedKeys = ref<Set<string>>(new Set())
+let vectorCheckSeq = 0
+
+async function checkVectorIndexed(keys: string[]) {
+  const mdKeys = keys.filter((k) => k && !k.endsWith('/'))
+  if (mdKeys.length === 0) return
+  const seq = ++vectorCheckSeq
+  try {
+    const res = await window.api.vectorCheckS3Files(s3.plainConfig(), s3.currentBucket!, mdKeys)
+    if (seq !== vectorCheckSeq) return // 丢弃过期结果
+    if (!res.ok) return
+    const next = new Set<string>()
+    for (const [key, indexed] of Object.entries(res.results)) {
+      if (indexed) next.add(key)
+    }
+    vectorIndexedKeys.value = next
+  } catch {
+    // 本地映射读取失败不阻塞浏览
+  }
+}
+
+// 全文索引功能是否关闭（索引服务总开关 / 全文索引子开关）
+const fulltextOff = computed(() => !settings.indexEnabled || !settings.fulltextEnabled)
+// 向量索引功能是否关闭（索引服务总开关 / 向量文本索引子开关）
+const vectorOff = computed(() => !settings.indexEnabled || !settings.vectorTextEnabled)
+
+// 文件列表变化时重新检测索引状态
+watch(
+  () => s3.files,
+  (files) => {
+    // 索引服务关闭时不检测，清空标签
+    if (fulltextOff.value) {
+      indexedKeys.value = new Set()
+    } else {
+      const keys = files.filter((f) => f.isMarkdown).map((f) => f.key)
+      if (keys.length > 0) checkIndexed(keys)
+      else indexedKeys.value = new Set()
+    }
+    if (vectorOff.value) {
+      vectorIndexedKeys.value = new Set()
+    } else {
+      const keys = files.filter((f) => f.isMarkdown).map((f) => f.key)
+      if (keys.length > 0) checkVectorIndexed(keys)
+      else vectorIndexedKeys.value = new Set()
+    }
+  },
+  { immediate: true }
+)
+
+// 开关变化时同步刷新标签：关闭清空，重新打开时重新检测
+watch([() => settings.indexEnabled, () => settings.fulltextEnabled], () => {
+  if (fulltextOff.value) {
+    indexedKeys.value = new Set()
+  } else if (s3.currentBucket && s3.files.length > 0) {
+    const keys = s3.files.filter((f) => f.isMarkdown).map((f) => f.key)
+    if (keys.length > 0) checkIndexed(keys)
+  }
+})
+
+watch([() => settings.indexEnabled, () => settings.vectorTextEnabled], () => {
+  if (vectorOff.value) {
+    vectorIndexedKeys.value = new Set()
+  } else if (s3.currentBucket && s3.files.length > 0) {
+    const keys = s3.files.filter((f) => f.isMarkdown).map((f) => f.key)
+    if (keys.length > 0) checkVectorIndexed(keys)
+  }
+})
+
+// 索引详情弹窗状态
+const indexInfoOpen = ref(false)
+const indexInfoDoc = ref<IndexSearchResult | null>(null)
+const indexInfoKey = ref<string | null>(null)
+
+// 点击「全文」标签：查询并展示索引详细信息
+async function showIndexInfo(file: S3ObjectEntry) {
+  indexInfoKey.value = file.key
+  try {
+    const protocol = settings.indexProtocol
+    const host = protocol === 'grpc' ? settings.grpcHost : settings.restHost
+    const port = protocol === 'grpc' ? settings.grpcPort : settings.restPort
+    const res = await window.api.indexGetDoc(
+      protocol,
+      host,
+      port,
+      settings.indexName,
+      's3',
+      '',
+      s3.plainConfig(),
+      s3.currentBucket!,
+      file.key
+    )
+    if (!res.ok || !res.doc) {
+      toastStore.pushToast('err', res.message || '获取索引详情失败')
+      return
+    }
+    indexInfoDoc.value = res.doc
+    indexInfoOpen.value = true
+  } catch (e) {
+    toastStore.pushToast('err', e instanceof Error ? e.message : '获取索引详情失败')
+  }
+}
+
+// 索引项被删除后：移除对应 S3 对象的「全文」标签
+function onIndexInfoDeleted() {
+  const key = indexInfoKey.value
+  if (key) {
+    const next = new Set(indexedKeys.value)
+    next.delete(key)
+    indexedKeys.value = next
+  }
+  indexInfoKey.value = null
+}
 
 // 右键菜单
 const contextMenu = ref({ show: false, x: 0, y: 0 })
@@ -30,20 +180,18 @@ function showFileDetails() {
 
 // 全文检索：生成索引
 const indexing = ref(false)
-const indexNotice = ref<{ type: 'ok' | 'err'; text: string } | null>(null)
-let indexNoticeTimer: ReturnType<typeof setTimeout> | null = null
-
-function showIndexNotice(type: 'ok' | 'err', text: string) {
-  indexNotice.value = { type, text }
-  if (indexNoticeTimer) clearTimeout(indexNoticeTimer)
-  indexNoticeTimer = setTimeout(() => {
-    indexNotice.value = null
-  }, 6000)
-}
 
 async function handleIndex() {
   if (!currentFile.value || !s3.currentBucket) return
   hideContextMenu()
+  // 索引服务关闭时禁用全文索引功能
+  if (!settings.indexEnabled || !settings.fulltextEnabled) {
+    toastStore.pushToast(
+      'err',
+      settings.indexEnabled ? '全文索引服务已关闭，请在全局设置中启用' : '索引服务已关闭，请在全局设置中启用'
+    )
+    return
+  }
   indexing.value = true
   try {
     const protocol = settings.indexProtocol
@@ -53,15 +201,89 @@ async function handleIndex() {
       protocol,
       host,
       port,
+      settings.indexName,
       s3.plainConfig(),
       s3.currentBucket,
       currentFile.value.key
     )
-    showIndexNotice(res.ok ? 'ok' : 'err', res.message)
+    toastStore.pushToast(res.ok ? 'ok' : 'err', res.message)
+    if (res.ok && res.docId !== undefined) {
+      // 仅真正索引成功（跳过空文件时 docId 为空）才标记「全文」
+      const next = new Set(indexedKeys.value)
+      next.add(currentFile.value.key)
+      indexedKeys.value = next
+    }
   } catch (e: unknown) {
-    showIndexNotice('err', e instanceof Error ? e.message : '生成索引失败')
+    toastStore.pushToast('err', e instanceof Error ? e.message : '生成索引失败')
   } finally {
     indexing.value = false
+  }
+}
+
+// 向量索引：生成向量索引（仅 gRPC，复用 grpc 地址/端口）
+const vectorIndexing = ref(false)
+
+async function handleVectorIndex() {
+  if (!currentFile.value || !s3.currentBucket) return
+  hideContextMenu()
+  // 索引服务关闭时禁用向量索引功能
+  if (!settings.indexEnabled || !settings.vectorTextEnabled) {
+    toastStore.pushToast(
+      'err',
+      settings.indexEnabled ? '向量文本索引服务已关闭，请在全局设置中启用' : '索引服务已关闭，请在全局设置中启用'
+    )
+    return
+  }
+  vectorIndexing.value = true
+  try {
+    const res = await window.api.vectorIndexS3(
+      settings.grpcHost,
+      settings.grpcPort,
+      settings.vectorIndexName,
+      settings.vectorModelName,
+      s3.plainConfig(),
+      s3.currentBucket,
+      currentFile.value.key,
+      settings.vectorChunkSize,
+      settings.vectorChunkOverlap
+    )
+    toastStore.pushToast(res.ok ? 'ok' : 'err', res.message)
+    // 仅真正索引成功（跳过空文件时 count 为 0）才标记「向量」
+    if (res.ok && res.count > 0) {
+      const next = new Set(vectorIndexedKeys.value)
+      next.add(currentFile.value.key)
+      vectorIndexedKeys.value = next
+    }
+  } catch (e: unknown) {
+    toastStore.pushToast('err', e instanceof Error ? e.message : '生成向量索引失败')
+  } finally {
+    vectorIndexing.value = false
+  }
+}
+
+// 向量索引：删除当前文件的向量索引
+async function handleVectorDelete() {
+  if (!currentFile.value || !s3.currentBucket) return
+  hideContextMenu()
+  try {
+    const res = await window.api.vectorDeleteFile(
+      settings.grpcHost,
+      settings.grpcPort,
+      settings.vectorIndexName,
+      's3',
+      currentFile.value.key,
+      s3.plainConfig(),
+      s3.currentBucket,
+      currentFile.value.key
+    )
+    toastStore.pushToast(res.ok ? 'ok' : 'err', res.message)
+    if (res.ok) {
+      const next = new Set(vectorIndexedKeys.value)
+      next.delete(currentFile.value.key)
+      vectorIndexedKeys.value = next
+    }
+  } catch (e: unknown) {
+    toastStore.pushToast('err', e instanceof Error ? e.message : '删除向量索引失败')
   }
 }
 
@@ -248,7 +470,17 @@ async function doSave() {
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/>
               </svg>
               <span class="s3-item-name">{{ decodeName(file.name) }}</span>
-              <span v-if="file.isMarkdown" class="s3-item-tag">打开</span>
+              <span
+                v-if="indexedKeys.has(file.key)"
+                class="s3-indexed-tag"
+                title="查看索引详情"
+                @click.stop="showIndexInfo(file)"
+              >全文</span>
+              <span
+                v-if="vectorIndexedKeys.has(file.key)"
+                class="s3-indexed-tag vector"
+                title="已生成向量索引"
+              >向量</span>
             </div>
 
             <div v-if="s3.folders.length === 0 && s3.files.length === 0" class="s3-empty">
@@ -277,11 +509,26 @@ async function doSave() {
         </svg>
         显示详情
       </div>
-      <div class="s3-context-menu-item" :class="{ disabled: indexing }" @click="handleIndex">
+      <div class="s3-context-menu-item" :class="{ disabled: indexing || fulltextOff }" @click="handleIndex">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 4v16M5 12h14"/>
         </svg>
-        生成索引
+        生成全文索引
+      </div>
+      <div class="s3-context-menu-item" :class="{ disabled: vectorIndexing || vectorOff }" @click="handleVectorIndex">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="6.5" cy="7.5" r="2.4"/>
+          <circle cx="17" cy="6" r="2.4"/>
+          <circle cx="16.5" cy="17" r="2.4"/>
+          <path d="M6.5 7.5l7.5 7.5M17 6l-4.5 2.7M9.9 9.6l6.6 4.5"/>
+        </svg>
+        生成向量索引
+      </div>
+      <div class="s3-context-menu-item" :class="{ disabled: vectorOff }" @click="handleVectorDelete">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 3h6M4 6h16M8 6l1 14h6l1-14M10 10v6M14 10v6"/>
+        </svg>
+        删除向量索引
       </div>
       <div class="s3-context-menu-divider"></div>
       <div class="s3-context-menu-item danger" @click="deleteFile">
@@ -290,11 +537,6 @@ async function doSave() {
         </svg>
         删除
       </div>
-    </div>
-
-    <!-- 索引提示 -->
-    <div v-if="indexNotice" class="s3-index-notice" :class="indexNotice.type" @click="indexNotice = null">
-      {{ indexNotice.text }}
     </div>
 
     <!-- 文件详情对话框 -->
@@ -348,6 +590,9 @@ async function doSave() {
         </div>
       </div>
     </div>
+
+    <!-- 索引详情弹窗 -->
+    <IndexInfoDialog :open="indexInfoOpen" :doc="indexInfoDoc" @close="indexInfoOpen = false" @deleted="onIndexInfoDeleted" />
   </div>
 </template>
 
@@ -493,10 +738,20 @@ async function doSave() {
   cursor: pointer;
 }
 
-.s3-item-tag {
-  font-size: 11px;
-  color: var(--accent-color);
+.s3-indexed-tag {
   flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: #fff;
+  background: #67c23a;
+  user-select: none;
+}
+
+/* 向量索引标签：蓝色背景区分全文（绿色） */
+.s3-indexed-tag.vector {
+  background: #409eff;
 }
 
 .s3-browse {
@@ -648,32 +903,6 @@ async function doSave() {
 
 .s3-context-menu-item.disabled:hover {
   background: transparent;
-}
-
-/* 索引提示 */
-.s3-index-notice {
-  position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: 12px;
-  padding: 8px 10px;
-  border-radius: 4px;
-  font-size: 12px;
-  cursor: pointer;
-  z-index: 150;
-  word-break: break-all;
-}
-
-.s3-index-notice.ok {
-  background: rgba(40, 167, 69, 0.15);
-  color: #28a745;
-  border: 1px solid rgba(40, 167, 69, 0.4);
-}
-
-.s3-index-notice.err {
-  background: rgba(220, 53, 69, 0.15);
-  color: #dc3545;
-  border: 1px solid rgba(220, 53, 69, 0.4);
 }
 
 .s3-context-menu-item.danger {
