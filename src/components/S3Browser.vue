@@ -4,7 +4,7 @@ import { useS3Store } from '../stores/s3'
 import { useEditorStore } from '../stores/editor'
 import { useSettingsStore } from '../stores/settings'
 import { useToastStore } from '../stores/toast'
-import type { S3ObjectEntry, IndexSearchResult } from '../types'
+import type { S3ObjectEntry, IndexSearchConfig, IndexSearchResult } from '../types'
 import IndexInfoDialog from './IndexInfoDialog.vue'
 
 const s3 = useS3Store()
@@ -12,58 +12,71 @@ const editor = useEditorStore()
 const settings = useSettingsStore()
 const toastStore = useToastStore()
 
-// 全文检索：当前目录下已生成索引的 S3 对象 Key 集合（显示「全文」标签）
+// 索引状态检查：统一查询「全文」+「向量」两个状态（按 BLAKE3 摘要精确匹配）
 const indexedKeys = ref<Set<string>>(new Set())
+const vectorIndexedKeys = ref<Set<string>>(new Set())
 let checkSeq = 0
 
+// 全文索引服务（md_docs）连接参数：向量索引的生成/删除也走该服务保存状态
+function searchCfg(): IndexSearchConfig {
+  const protocol = settings.indexProtocol
+  return {
+    protocol,
+    host: protocol === 'grpc' ? settings.grpcHost : settings.restHost,
+    port: protocol === 'grpc' ? settings.grpcPort : settings.restPort,
+    indexName: settings.indexName
+  }
+}
+
+// 索引状态查询配置：开启 Raft 同步后，状态改为从 Raft 按 blake3 读取
+function raftQueryCfg() {
+  return {
+    enabled: settings.raftSyncEnabled,
+    protocol: settings.raftProtocol,
+    host: settings.raftHost,
+    port: settings.raftProtocol === 'grpc' ? settings.raftGrpcPort : settings.raftRestPort,
+    group: settings.raftGroup
+  }
+}
+
 async function checkIndexed(keys: string[]) {
+  // 索引服务关闭时不检测，清空「全文」「向量」标签
+  if (!settings.indexEnabled) {
+    indexedKeys.value = new Set()
+    vectorIndexedKeys.value = new Set()
+    return
+  }
   const mdKeys = keys.filter((k) => k && !k.endsWith('/'))
   if (mdKeys.length === 0) return
   const seq = ++checkSeq
   try {
-    const protocol = settings.indexProtocol
-    const host = protocol === 'grpc' ? settings.grpcHost : settings.restHost
-    const port = protocol === 'grpc' ? settings.grpcPort : settings.restPort
     const res = await window.api.indexCheckS3Files(
-      protocol,
-      host,
-      port,
-      settings.indexName,
+      searchCfg().protocol,
+      searchCfg().host,
+      searchCfg().port,
+      searchCfg().indexName,
       s3.plainConfig(),
       s3.currentBucket!,
-      mdKeys
+      mdKeys,
+      raftQueryCfg()
     )
     if (seq !== checkSeq) return // 丢弃过期结果
     if (!res.ok) return
-    const next = new Set<string>()
-    for (const [key, indexed] of Object.entries(res.results)) {
-      if (indexed) next.add(key)
+    const nextFt = new Set(indexedKeys.value)
+    const nextVec = new Set(vectorIndexedKeys.value)
+    for (const [key, st] of Object.entries(res.results)) {
+      if (st.hasFulltext) nextFt.add(key)
+      else nextFt.delete(key)
+      if (st.hasVector) nextVec.add(key)
+      else nextVec.delete(key)
     }
-    indexedKeys.value = next
+    // 子开关关闭时不显示对应标签
+    if (!settings.fulltextEnabled) nextFt.clear()
+    if (!settings.vectorTextEnabled) nextVec.clear()
+    indexedKeys.value = nextFt
+    vectorIndexedKeys.value = nextVec
   } catch {
     // 检测失败不阻塞浏览
-  }
-}
-
-// 向量索引：当前目录下已生成向量索引的 S3 对象 Key 集合（显示「向量」标签）
-const vectorIndexedKeys = ref<Set<string>>(new Set())
-let vectorCheckSeq = 0
-
-async function checkVectorIndexed(keys: string[]) {
-  const mdKeys = keys.filter((k) => k && !k.endsWith('/'))
-  if (mdKeys.length === 0) return
-  const seq = ++vectorCheckSeq
-  try {
-    const res = await window.api.vectorCheckS3Files(s3.plainConfig(), s3.currentBucket!, mdKeys)
-    if (seq !== vectorCheckSeq) return // 丢弃过期结果
-    if (!res.ok) return
-    const next = new Set<string>()
-    for (const [key, indexed] of Object.entries(res.results)) {
-      if (indexed) next.add(key)
-    }
-    vectorIndexedKeys.value = next
-  } catch {
-    // 本地映射读取失败不阻塞浏览
   }
 }
 
@@ -76,20 +89,11 @@ const vectorOff = computed(() => !settings.indexEnabled || !settings.vectorTextE
 watch(
   () => s3.files,
   (files) => {
-    // 索引服务关闭时不检测，清空标签
-    if (fulltextOff.value) {
+    const keys = files.filter((f) => f.isMarkdown).map((f) => f.key)
+    if (keys.length > 0) checkIndexed(keys)
+    else {
       indexedKeys.value = new Set()
-    } else {
-      const keys = files.filter((f) => f.isMarkdown).map((f) => f.key)
-      if (keys.length > 0) checkIndexed(keys)
-      else indexedKeys.value = new Set()
-    }
-    if (vectorOff.value) {
       vectorIndexedKeys.value = new Set()
-    } else {
-      const keys = files.filter((f) => f.isMarkdown).map((f) => f.key)
-      if (keys.length > 0) checkVectorIndexed(keys)
-      else vectorIndexedKeys.value = new Set()
     }
   },
   { immediate: true }
@@ -99,7 +103,8 @@ watch(
 watch([() => settings.indexEnabled, () => settings.fulltextEnabled], () => {
   if (fulltextOff.value) {
     indexedKeys.value = new Set()
-  } else if (s3.currentBucket && s3.files.length > 0) {
+  }
+  if (s3.currentBucket && s3.files.length > 0) {
     const keys = s3.files.filter((f) => f.isMarkdown).map((f) => f.key)
     if (keys.length > 0) checkIndexed(keys)
   }
@@ -108,9 +113,10 @@ watch([() => settings.indexEnabled, () => settings.fulltextEnabled], () => {
 watch([() => settings.indexEnabled, () => settings.vectorTextEnabled], () => {
   if (vectorOff.value) {
     vectorIndexedKeys.value = new Set()
-  } else if (s3.currentBucket && s3.files.length > 0) {
+  }
+  if (s3.currentBucket && s3.files.length > 0) {
     const keys = s3.files.filter((f) => f.isMarkdown).map((f) => f.key)
-    if (keys.length > 0) checkVectorIndexed(keys)
+    if (keys.length > 0) checkIndexed(keys)
   }
 })
 
@@ -237,6 +243,7 @@ async function handleVectorIndex() {
   vectorIndexing.value = true
   try {
     const res = await window.api.vectorIndexS3(
+      searchCfg(),
       settings.grpcHost,
       settings.grpcPort,
       settings.vectorIndexName,
@@ -267,6 +274,7 @@ async function handleVectorDelete() {
   hideContextMenu()
   try {
     const res = await window.api.vectorDeleteFile(
+      searchCfg(),
       settings.grpcHost,
       settings.grpcPort,
       settings.vectorIndexName,
@@ -711,7 +719,7 @@ async function doSave() {
 .s3-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   padding: 6px 8px;
   border-radius: 4px;
   cursor: pointer;
@@ -725,7 +733,8 @@ async function doSave() {
 }
 
 .s3-item-name {
-  flex: 1;
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -749,9 +758,9 @@ async function doSave() {
   user-select: none;
 }
 
-/* 向量索引标签：蓝色背景区分全文（绿色） */
+/* 向量索引标签：紫色背景区分全文（绿色） */
 .s3-indexed-tag.vector {
-  background: #409eff;
+  background: #8209c9;
 }
 
 .s3-browse {

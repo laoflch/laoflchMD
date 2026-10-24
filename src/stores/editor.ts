@@ -186,6 +186,32 @@ md.renderer.rules.heading_open = function (tokens, idx, options, env, self) {
   return originalHeadingOpen(tokens, idx, options, env, self)
 }
 
+// 保留段落间的连续空行为空段落 <p><br></p>（所见即所得，Typora 行为）：
+// markdown-it 默认把段落间的多个空行折叠为一个段落间距，导致预览(contenteditable)里按 Enter
+// 产生的空行在保存后切回预览时「消失」。这里在 block 解析后，依据相邻段落 token 的行号差
+// （map 差值）恢复空行数量：标准段落间距消耗 1 个空行，额外空行插入等量空段落 HTML。
+md.core.ruler.after('block', 'preserveBlankLines', (state: any) => {
+  const tokens = state.tokens
+  const out: any[] = []
+  let prevEnd = -1
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]
+    if (t.type === 'paragraph_open' && Array.isArray(t.map)) {
+      if (prevEnd >= 0) {
+        const blanks = t.map[0] - prevEnd - 1
+        for (let b = 0; b < blanks; b++) {
+          const tok = new state.Token('html_inline', '', 0)
+          tok.content = '<p><br></p>'
+          out.push(tok)
+        }
+      }
+      prevEnd = t.map[1]
+    }
+    out.push(t)
+  }
+  state.tokens = out
+})
+
 // Turndown: HTML -> Markdown (用于预览区编辑后回写)
 // 懒初始化 —— 模块已打包，但实例化推迟到首次预览区编辑提交时
 let turndown: TurndownService | null = null
@@ -208,8 +234,29 @@ function getTurndown(): TurndownService {
     replacement: function (_content: string, node: any) {
       const codeEl = node.querySelector('code')
       const lang = codeEl?.className.match(/language-(\w+)/)?.[1] || ''
-      const code = codeEl?.textContent || node.textContent || ''
+      // 提取整个 pre 的完整文本，而非仅第一个 code 元素：
+      // contenteditable 中编辑代码块时，浏览器会把内容移到 code 外或拆成多个 code，
+      // 若只取 code.textContent 会导致编辑点之后的内容在保存时丢失。
+      // 同时把 pre 内的 <br>（代码块内按回车产生）转成换行符，否则 textContent 不含换行。
+      const clone = node.cloneNode(true)
+      const brs = clone.querySelectorAll('br')
+      for (let i = 0; i < brs.length; i++) {
+        brs[i].replaceWith(clone.ownerDocument.createTextNode('\n'))
+      }
+      const code = clone.textContent || ''
       return '\n\n```' + lang + '\n' + code.replace(/\n$/, '') + '\n```\n\n'
+    }
+  })
+
+  // 段落规则（覆盖 turndown 默认 p 规则）：contenteditable 中按 Enter 产生的空段落
+  // （<p><br></p> 或 <p></p>）→ \u0000 占位。turndown 的 join 会把相邻块级输出的换行
+  // 压缩到最多 1 空行，普通换行替换会被吞掉导致多空行丢失；非空白占位符可绕过该折叠，
+  // 转换完成后由 setContentFromHtml 把占位符重建为等量空行。
+  turndown.addRule('p', {
+    filter: 'p',
+    replacement: function (content: string, node: any) {
+      if ((node.textContent || '').trim() === '') return '\u0000'
+      return '\n\n' + content + '\n\n'
     }
   })
 
@@ -365,8 +412,12 @@ function hello() {
   }
 
   function setContentFromHtml(html: string) {
-    const mdText = getTurndown().turndown(html)
-    setContent(mdText)
+    let mdText = getTurndown().turndown(html)
+    // 空段落占位 \u0000 重建为段落间空行：N 个空段落 = N+1 个空行，
+    // 与渲染端 preserveBlankLines 插件配对，实现「预览回车 → 保存 → 切回预览」换行不消失
+    mdText = mdText.replace(/\n\n(\u0000+)\n\n/g, (_: string, z: string) => '\n\n' + '\n'.repeat(z.length))
+    mdText = mdText.replace(/\u0000/g, '\n')
+    setContent(mdText.trim())
   }
 
   // 预览区(contenteditable)每次内容变动时调用，仅标记为未保存，不做重渲染、不入历史
@@ -431,6 +482,8 @@ function hello() {
   function syncEditablePreviewToContent() {
     const html = useEditorDom().getEditableHtml()
     if (html !== null) {
+      // 预览 DOM 与渲染结果一致（用户未编辑）时跳过逆转换，保留原始 Markdown，避免有损转换
+      if (html === renderedHtml.value) return
       setContentFromHtml(html)
     }
   }

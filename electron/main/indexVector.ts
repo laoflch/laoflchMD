@@ -1,16 +1,36 @@
-import { app, ipcMain } from 'electron'
+import { ipcMain } from 'electron'
 import { hostname as getHostname } from 'os'
 import { join, basename, extname } from 'path'
-import { readFileSync, readdirSync, statSync, writeFileSync, existsSync, mkdirSync } from 'fs'
-import { computeBlake3, fetchS3Content, type S3IndexConfig } from './indexSearch'
+import { readFileSync, readdirSync, statSync } from 'fs'
+import {
+  computeBlake3,
+  fetchS3Content,
+  getClient,
+  localDocId,
+  queryByDigest,
+  s3DocId,
+  upsertDocument,
+  buildFields,
+  type IndexProtocol,
+  type IndexSearchResult,
+  type S3IndexConfig
+} from './indexSearch'
 
 /**
  * 向量文本索引服务（laoflchdb-rust）客户端。
  * - 仅支持 gRPC：VectorService（生成 embedding）+ EmbeddingIndexService（向量索引存取）
  * - 文档按固定块长分块，每块一条向量，块 ID 由「文件 BLAKE3 摘要 + 块序号」哈希生成（48bit）
- * - 服务端 SearchEmbedding 响应不含 fields，故客户端本地维护 id→fields 映射
- *   （持久化到 userData/laoflchmd.vector.json）
+ * - 服务端 SearchEmbedding 响应不含 fields，因此向量状态与 chunk 信息统一保存在
+ *   全文索引 md_docs 的条目中（has_vector + chunks 字段），向量搜索时反查，不再使用本地映射
  */
+
+/** 全文索引服务（md_docs）连接参数：生成/删除向量索引时同步写入状态条目 */
+export interface SearchCfg {
+  protocol: IndexProtocol
+  host: string
+  port: string
+  indexName: string
+}
 
 const DEFAULT_USER = 'admin'
 const DEFAULT_PASS = 'laoflchdb'
@@ -544,75 +564,6 @@ function getVectorClient(host: string, port: string): VectorGrpcClient {
   return client
 }
 
-// ———————— 本地 id→fields 映射（服务端搜索结果不含 fields） ————————
-
-interface VectorEntry {
-  title: string
-  path: string
-  kind: 'local' | 's3'
-  host: string
-  server: string
-  bucket: string
-  key: string
-  blake3: string
-  chunkIndex: number
-  totalChunks: number
-  snippet: string
-}
-
-interface VectorMapping {
-  version: number
-  files: Record<string, { blake3: string; ids: number[] }>
-  entries: Record<string, VectorEntry>
-}
-
-let mapping: VectorMapping | null = null
-
-function mappingPath(): string {
-  return join(app.getPath('userData'), 'laoflchmd.vector.json')
-}
-
-function getMapping(): VectorMapping {
-  if (!mapping) {
-    try {
-      const raw = readFileSync(mappingPath(), 'utf8')
-      const parsed = JSON.parse(raw) as VectorMapping
-      if (parsed && typeof parsed === 'object' && parsed.files && parsed.entries) {
-        mapping = parsed
-      } else {
-        mapping = { version: 1, files: {}, entries: {} }
-      }
-    } catch {
-      mapping = { version: 1, files: {}, entries: {} }
-    }
-  }
-  return mapping
-}
-
-function saveMapping(): void {
-  try {
-    const dir = app.getPath('userData')
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-    writeFileSync(mappingPath(), JSON.stringify(getMapping()), 'utf8')
-  } catch {
-    // 映射写入失败不阻塞主流程
-  }
-}
-
-function fileKeyOf(
-  kind: 'local' | 's3',
-  path: string,
-  config?: S3IndexConfig,
-  bucket?: string,
-  key?: string
-): string {
-  if (kind === 's3') {
-    const server = (config?.endpoint || 's3.amazonaws.com').replace(/^https?:\/\//i, '').replace(/\/+$/, '')
-    return `s3:${server}/${bucket || ''}/${key || ''}`
-  }
-  return `local:${path}`
-}
-
 // ———————— 分块与块 ID ————————
 
 function splitChunks(text: string, chunkSize: number, overlap: number): string[] {
@@ -673,38 +624,109 @@ async function createEmbeddingsBatched(
   return results
 }
 
-async function deleteVectorFile(client: VectorGrpcClient, indexName: string, fileKey: string): Promise<void> {
-  const m = getMapping()
-  const rec = m.files[fileKey]
-  if (!rec) return
-  for (const id of rec.ids) {
+/** 按摘要从 md_docs 反查该文件已有的 chunk id，删除对应的向量数据（用于重新生成前的清理） */
+async function deleteChunksOfDigest(
+  searchCfg: SearchCfg,
+  client: VectorGrpcClient,
+  indexName: string,
+  digest: string
+): Promise<void> {
+  let old: IndexSearchResult | null = null
+  try {
+    old = await queryByDigest(searchCfg.protocol, searchCfg.host, searchCfg.port, searchCfg.indexName, digest)
+  } catch {
+    return
+  }
+  if (!old) return
+  let chunks: Array<{ id: number }> = []
+  try {
+    chunks = JSON.parse(old.fields.chunks || '[]')
+  } catch {
+    return
+  }
+  for (const c of chunks) {
     try {
-      await client.deleteEmbedding(id, indexName)
+      await client.deleteEmbedding(Number(c.id), indexName)
     } catch {
       // 单条删除失败不阻塞整体
     }
   }
-  delete m.files[fileKey]
-  for (const id of rec.ids) delete m.entries[String(id)]
-  saveMapping()
 }
 
-async function deleteVectorId(client: VectorGrpcClient, indexName: string, id: number): Promise<void> {
-  const m = getMapping()
+async function deleteVectorFile(
+  searchCfg: SearchCfg,
+  client: VectorGrpcClient,
+  indexName: string,
+  kind: 'local' | 's3',
+  path: string,
+  config?: S3IndexConfig,
+  bucket?: string,
+  key?: string
+): Promise<void> {
+  // 通过文件内容摘要定位 md_docs 条目，反查 chunk id 后删除向量数据
+  const content =
+    kind === 's3' ? await fetchS3Content(config!, bucket!, key!) : readFileSync(path, 'utf8')
+  const digest = await computeBlake3(content)
+  const old = await queryByDigest(searchCfg.protocol, searchCfg.host, searchCfg.port, searchCfg.indexName, digest)
+  if (!old) return
+  let chunks: Array<{ id: number }> = []
   try {
-    await client.deleteEmbedding(id, indexName)
+    chunks = JSON.parse(old.fields.chunks || '[]')
   } catch {
-    // 服务端删除失败时仍清理本地映射，避免脏条目
+    chunks = []
   }
-  delete m.entries[String(id)]
-  for (const fk of Object.keys(m.files)) {
-    const rec = m.files[fk]
-    if (rec.ids.includes(id)) {
-      rec.ids = rec.ids.filter((x) => x !== id)
-      if (!rec.ids.length) delete m.files[fk]
+  for (const c of chunks) {
+    try {
+      await client.deleteEmbedding(Number(c.id), indexName)
+    } catch {
+      // 单条删除失败不阻塞整体
     }
   }
-  saveMapping()
+  // 同步 md_docs 条目：仍有全文索引则保留条目仅置 has_vector=0，否则删除整个条目
+  const searchClient = getClient(searchCfg.protocol, searchCfg.host, searchCfg.port)
+  if (old.fields.has_fulltext === '1') {
+    const merged: Record<string, string> = { ...old.fields }
+    merged.has_vector = '0'
+    merged.chunks = '[]'
+    await searchClient.deleteDocument(searchCfg.indexName, old.docId)
+    await searchClient.addDocument(searchCfg.indexName, '', merged)
+  } else {
+    await searchClient.deleteDocument(searchCfg.indexName, old.docId)
+  }
+}
+
+async function deleteVectorId(
+  searchCfg: SearchCfg,
+  client: VectorGrpcClient,
+  indexName: string,
+  id: number
+): Promise<void> {
+  await client.deleteEmbedding(id, indexName)
+  // 从 md_docs 反查该 chunk 所属条目并移除对应 chunk
+  const searchClient = getClient(searchCfg.protocol, searchCfg.host, searchCfg.port)
+  const entries = await searchClient.searchMultiField(searchCfg.indexName, { has_vector: '1' }, 10000)
+  for (const e of entries) {
+    let chunks: Array<{ id: number; idx: number; total: number; snippet: string }> = []
+    try {
+      chunks = JSON.parse(e.fields.chunks || '[]')
+    } catch {
+      continue
+    }
+    const idx = chunks.findIndex((c) => Number(c.id) === id)
+    if (idx < 0) continue
+    chunks.splice(idx, 1)
+    const merged: Record<string, string> = { ...e.fields }
+    merged.chunks = JSON.stringify(chunks)
+    merged.has_vector = chunks.length ? '1' : '0'
+    if (!chunks.length && e.fields.has_fulltext !== '1') {
+      // 最后一个 chunk 且无全文索引：删除整个条目
+      await searchClient.deleteDocument(searchCfg.indexName, e.docId)
+    } else {
+      await searchClient.deleteDocument(searchCfg.indexName, e.docId)
+      await searchClient.addDocument(searchCfg.indexName, '', merged)
+    }
+    break
+  }
 }
 
 function collectMarkdownFiles(dirPath: string): string[] {
@@ -741,28 +763,55 @@ interface IndexVectorOutcome {
   count: number
 }
 
-function entryBaseOf(
-  kind: 'local' | 's3',
-  title: string,
-  path: string,
-  blake3: string,
-  server: string,
-  bucket: string,
-  key: string
-) {
-  return {
-    title,
-    path,
-    kind,
-    host: kind === 'local' ? getHostname() : server,
-    server,
-    bucket,
-    key,
-    blake3
+/** 向量索引生成后：把状态与 chunk 信息写入 md_docs 条目（合并已有全文状态，未全文索引不保存正文） */
+async function syncEntryAfterVector(
+  searchCfg: SearchCfg,
+  meta: {
+    docId: string
+    title: string
+    path: string
+    kind: 'local' | 's3'
+    host: string
+    server: string
+    bucket: string
+    key: string
+    blake3: string
+    chunkRecords: Array<{ id: number; idx: number; total: number; snippet: string }>
   }
+): Promise<void> {
+  let oldHasFulltext = '0'
+  let oldContent = ''
+  try {
+    const old = await queryByDigest(searchCfg.protocol, searchCfg.host, searchCfg.port, searchCfg.indexName, meta.blake3)
+    if (old) {
+      oldHasFulltext = old.fields.has_fulltext === '1' ? '1' : '0'
+      oldContent = oldHasFulltext === '1' ? old.fields.content || '' : ''
+    }
+  } catch {
+    // 查询失败按无旧状态处理
+  }
+  const fields = buildFields({
+    docId: meta.docId,
+    title: meta.title,
+    content: oldContent,
+    path: meta.path,
+    kind: meta.kind,
+    host: meta.host,
+    server: meta.server,
+    bucket: meta.bucket,
+    key: meta.key,
+    updatedAt: new Date().toISOString(),
+    blake3: meta.blake3,
+    hasFulltext: oldHasFulltext,
+    hasVector: '1',
+    chunks: JSON.stringify(meta.chunkRecords)
+  })
+  const client = getClient(searchCfg.protocol, searchCfg.host, searchCfg.port)
+  await upsertDocument(client, searchCfg.indexName, fields)
 }
 
 async function indexVectorLocalFile(
+  searchCfg: SearchCfg,
   host: string,
   port: string,
   indexName: string,
@@ -782,16 +831,15 @@ async function indexVectorLocalFile(
       return { ok: true, message: `跳过空文件：${basename(filePath)}`, count: 0 }
     }
     const client = getVectorClient(host, port)
+    // 重新生成前删除该文件已有的向量数据（内容未变时摘要一致，可定位旧 chunk）
+    await deleteChunksOfDigest(searchCfg, client, indexName, digest)
     const embeddings = await createEmbeddingsBatched(client, modelName, chunks, DEFAULT_VECTOR_DIM)
 
-    const fileKey = fileKeyOf('local', filePath)
-    await deleteVectorFile(client, indexName, fileKey)
-
     const title = basename(filePath, extname(filePath)) || basename(filePath)
-    const ids: number[] = []
+    const chunkRecords: Array<{ id: number; idx: number; total: number; snippet: string }> = []
     for (let i = 0; i < chunks.length; i++) {
       const id = await chunkId(digest, i)
-      ids.push(id)
+      chunkRecords.push({ id, idx: i, total: chunks.length, snippet: chunks[i].slice(0, 300) })
       await client.insertEmbedding(id, indexName, embeddings[i], {
         title,
         path: filePath,
@@ -807,18 +855,19 @@ async function indexVectorLocalFile(
       })
     }
 
-    const m = getMapping()
-    m.files[fileKey] = { blake3: digest, ids }
-    const base = entryBaseOf('local', title, filePath, digest, '', '', '')
-    for (let i = 0; i < chunks.length; i++) {
-      m.entries[String(ids[i])] = {
-        ...base,
-        chunkIndex: i,
-        totalChunks: chunks.length,
-        snippet: chunks[i].slice(0, 300)
-      }
-    }
-    saveMapping()
+    // 同步写入 md_docs 状态条目
+    await syncEntryAfterVector(searchCfg, {
+      docId: localDocId(filePath),
+      title,
+      path: filePath,
+      kind: 'local',
+      host: getHostname(),
+      server: '',
+      bucket: '',
+      key: '',
+      blake3: digest,
+      chunkRecords
+    })
     return { ok: true, message: `已生成向量索引：${basename(filePath)}（${chunks.length} 块）`, count: chunks.length }
   } catch (e: any) {
     return { ok: false, message: `向量索引 ${basename(filePath)} 失败：${e.message || e}`, count: 0 }
@@ -826,6 +875,7 @@ async function indexVectorLocalFile(
 }
 
 async function indexVectorDir(
+  searchCfg: SearchCfg,
   host: string,
   port: string,
   indexName: string,
@@ -841,7 +891,7 @@ async function indexVectorDir(
   for (let i = 0; i < files.length; i++) {
     const filePath = files[i]
     onProgress?.(i + 1, files.length, basename(filePath))
-    const res = await indexVectorLocalFile(host, port, indexName, modelName, filePath, chunkSize, overlap)
+    const res = await indexVectorLocalFile(searchCfg, host, port, indexName, modelName, filePath, chunkSize, overlap)
     if (res.ok) okCount++
     else if (!firstErr) firstErr = res.message
   }
@@ -852,6 +902,7 @@ async function indexVectorDir(
 }
 
 async function indexVectorS3File(
+  searchCfg: SearchCfg,
   host: string,
   port: string,
   indexName: string,
@@ -873,17 +924,16 @@ async function indexVectorS3File(
       return { ok: true, message: `跳过空文件：${basename(key)}`, count: 0 }
     }
     const client = getVectorClient(host, port)
+    // 重新生成前删除该文件已有的向量数据（内容未变时摘要一致，可定位旧 chunk）
+    await deleteChunksOfDigest(searchCfg, client, indexName, digest)
     const embeddings = await createEmbeddingsBatched(client, modelName, chunks, DEFAULT_VECTOR_DIM)
 
     const server = (config.endpoint || 's3.amazonaws.com').replace(/\/+$/, '')
-    const fileKey = fileKeyOf('s3', key, config, bucket, key)
-    await deleteVectorFile(client, indexName, fileKey)
-
     const title = basename(key, extname(key)) || basename(key)
-    const ids: number[] = []
+    const chunkRecords: Array<{ id: number; idx: number; total: number; snippet: string }> = []
     for (let i = 0; i < chunks.length; i++) {
       const id = await chunkId(digest, i)
-      ids.push(id)
+      chunkRecords.push({ id, idx: i, total: chunks.length, snippet: chunks[i].slice(0, 300) })
       await client.insertEmbedding(id, indexName, embeddings[i], {
         title,
         path: key,
@@ -899,18 +949,19 @@ async function indexVectorS3File(
       })
     }
 
-    const m = getMapping()
-    m.files[fileKey] = { blake3: digest, ids }
-    const base = entryBaseOf('s3', title, key, digest, server, bucket, key)
-    for (let i = 0; i < chunks.length; i++) {
-      m.entries[String(ids[i])] = {
-        ...base,
-        chunkIndex: i,
-        totalChunks: chunks.length,
-        snippet: chunks[i].slice(0, 300)
-      }
-    }
-    saveMapping()
+    // 同步写入 md_docs 状态条目
+    await syncEntryAfterVector(searchCfg, {
+      docId: s3DocId(config, bucket, key),
+      title,
+      path: key,
+      kind: 's3',
+      host: server,
+      server,
+      bucket,
+      key,
+      blake3: digest,
+      chunkRecords
+    })
     return { ok: true, message: `已生成向量索引：${basename(key)}（${chunks.length} 块）`, count: chunks.length }
   } catch (e: any) {
     return { ok: false, message: `向量索引 ${basename(key)} 失败：${e.message || e}`, count: 0 }
@@ -920,10 +971,12 @@ async function indexVectorS3File(
 export interface VectorSearchResult {
   docId: string
   score: number
+  distance: number
   fields: Record<string, string>
 }
 
 async function searchVector(
+  searchCfg: SearchCfg,
   host: string,
   port: string,
   indexName: string,
@@ -936,26 +989,44 @@ async function searchVector(
     const qEmb = await client.createEmbedding(modelName, [query], DEFAULT_VECTOR_DIM)
     if (!qEmb.length) throw new Error('查询向量生成失败')
     const hits = await client.searchEmbedding(qEmb[0].embedding, indexName, topK)
-    const m = getMapping()
+    // 向量服务搜索结果不含 fields，从 md_docs 拉取所有 has_vector=1 的条目反查 chunk 信息
+    const searchClient = getClient(searchCfg.protocol, searchCfg.host, searchCfg.port)
+    const entries = await searchClient.searchMultiField(searchCfg.indexName, { has_vector: '1' }, 10000)
+    const chunkMap = new Map<
+      number,
+      { fields: Record<string, string>; chunk: { id: number; idx: number; total: number; snippet: string } }
+    >()
+    for (const e of entries) {
+      let chunks: Array<{ id: number; idx: number; total: number; snippet: string }> = []
+      try {
+        chunks = JSON.parse(e.fields.chunks || '[]')
+      } catch {
+        continue
+      }
+      for (const c of chunks) {
+        chunkMap.set(Number(c.id), { fields: e.fields, chunk: c })
+      }
+    }
     const results: VectorSearchResult[] = hits.map((h) => {
-      const entry = m.entries[String(h.id)]
+      const rec = chunkMap.get(h.id)
       return {
         docId: String(h.id),
         // Cosine 距离 → 相似度：1 - distance（clip 下限 0）
         score: Math.max(0, 1 - h.distance),
-        fields: entry
+        distance: h.distance,
+        fields: rec
           ? {
-              title: entry.title,
-              path: entry.path,
-              kind: entry.kind,
-              host: entry.host,
-              server: entry.server,
-              bucket: entry.bucket,
-              key: entry.key,
-              blake3: entry.blake3,
-              chunk_index: String(entry.chunkIndex),
-              total_chunks: String(entry.totalChunks),
-              snippet: entry.snippet
+              title: rec.fields.title || '',
+              path: rec.fields.path || '',
+              kind: rec.fields.kind || 'local',
+              host: rec.fields.host || '',
+              server: rec.fields.server || '',
+              bucket: rec.fields.bucket || '',
+              key: rec.fields.key || '',
+              blake3: rec.fields.blake3 || '',
+              chunk_index: String(rec.chunk.idx),
+              total_chunks: String(rec.chunk.total),
+              snippet: rec.chunk.snippet || ''
             }
           : {}
       }
@@ -991,6 +1062,7 @@ export function registerVectorIndexHandlers(): void {
     'vector:indexLocal',
     async (
       _e,
+      searchCfg: SearchCfg,
       host: string,
       port: string,
       indexName: string,
@@ -1000,6 +1072,7 @@ export function registerVectorIndexHandlers(): void {
       overlap?: number
     ) => {
       return indexVectorLocalFile(
+        searchCfg,
         host,
         port,
         indexName,
@@ -1015,6 +1088,7 @@ export function registerVectorIndexHandlers(): void {
     'vector:indexDir',
     async (
       e,
+      searchCfg: SearchCfg,
       host: string,
       port: string,
       indexName: string,
@@ -1024,6 +1098,7 @@ export function registerVectorIndexHandlers(): void {
       overlap?: number
     ) => {
       return indexVectorDir(
+        searchCfg,
         host,
         port,
         indexName,
@@ -1042,6 +1117,7 @@ export function registerVectorIndexHandlers(): void {
     'vector:indexS3',
     async (
       _e,
+      searchCfg: SearchCfg,
       host: string,
       port: string,
       indexName: string,
@@ -1053,6 +1129,7 @@ export function registerVectorIndexHandlers(): void {
       overlap?: number
     ) => {
       return indexVectorS3File(
+        searchCfg,
         host,
         port,
         indexName,
@@ -1070,6 +1147,7 @@ export function registerVectorIndexHandlers(): void {
     'vector:search',
     async (
       _e,
+      searchCfg: SearchCfg,
       host: string,
       port: string,
       indexName: string,
@@ -1077,7 +1155,7 @@ export function registerVectorIndexHandlers(): void {
       query: string,
       topK?: number
     ) => {
-      return searchVector(host, port, indexName, modelName, query, topK || DEFAULT_SEARCH_LIMIT)
+      return searchVector(searchCfg, host, port, indexName, modelName, query, topK || DEFAULT_SEARCH_LIMIT)
     }
   )
 
@@ -1085,6 +1163,7 @@ export function registerVectorIndexHandlers(): void {
     'vector:deleteFile',
     async (
       _e,
+      searchCfg: SearchCfg,
       host: string,
       port: string,
       indexName: string,
@@ -1096,8 +1175,7 @@ export function registerVectorIndexHandlers(): void {
     ) => {
       try {
         const client = getVectorClient(host, port)
-        const fileKey = fileKeyOf(kind, path, config, bucket, key)
-        await deleteVectorFile(client, indexName, fileKey)
+        await deleteVectorFile(searchCfg, client, indexName, kind, path, config, bucket, key)
         return { ok: true, message: '已删除该文件的向量索引' }
       } catch (e: any) {
         return { ok: false, message: e.message || '删除向量索引失败' }
@@ -1107,40 +1185,25 @@ export function registerVectorIndexHandlers(): void {
 
   ipcMain.handle(
     'vector:deleteId',
-    async (_e, host: string, port: string, indexName: string, id: string | number) => {
+    async (
+      _e,
+      searchCfg: SearchCfg,
+      host: string,
+      port: string,
+      indexName: string,
+      id: string | number
+    ) => {
       try {
         const num = Number(id)
         if (!/^\d+$/.test(String(num))) {
           return { ok: false, message: `无效的向量 ID：${id}` }
         }
         const client = getVectorClient(host, port)
-        await deleteVectorId(client, indexName, num)
+        await deleteVectorId(searchCfg, client, indexName, num)
         return { ok: true, message: '已删除该向量条目' }
       } catch (e: any) {
         return { ok: false, message: e.message || '删除向量条目失败' }
       }
-    }
-  )
-
-  // 本地映射查询：文件是否已生成向量索引（向量索引的 fields 在本地，无需访问服务端）
-  ipcMain.handle('vector:checkFiles', async (_e, paths: string[]) => {
-    const m = getMapping()
-    const results: Record<string, boolean> = {}
-    for (const p of paths.filter(Boolean)) {
-      results[p] = !!m.files[`local:${p}`]
-    }
-    return { ok: true, message: '', results }
-  })
-
-  ipcMain.handle(
-    'vector:checkS3Files',
-    async (_e, config: S3IndexConfig, bucket: string, keys: string[]) => {
-      const m = getMapping()
-      const results: Record<string, boolean> = {}
-      for (const key of keys.filter(Boolean)) {
-        results[key] = !!m.files[fileKeyOf('s3', key, config, bucket, key)]
-      }
-      return { ok: true, message: '', results }
     }
   )
 }

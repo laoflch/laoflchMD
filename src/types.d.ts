@@ -60,7 +60,8 @@ declare global {
         protocol: IndexProtocol,
         host: string,
         port: string,
-        indexName: string
+        indexName: string,
+        allowRebuild?: boolean
       ) => Promise<{ ok: boolean; message: string; created: boolean }>
       indexSearch: (
         protocol: IndexProtocol,
@@ -98,8 +99,9 @@ declare global {
         host: string,
         port: string,
         indexName: string,
-        paths: string[]
-      ) => Promise<{ ok: boolean; message: string; results: Record<string, boolean> }>
+        paths: string[],
+        raft?: RaftQueryConfig
+      ) => Promise<{ ok: boolean; message: string; results: Record<string, IndexCheckResult> }>
       indexCheckS3Files: (
         protocol: IndexProtocol,
         host: string,
@@ -107,8 +109,16 @@ declare global {
         indexName: string,
         config: S3Config,
         bucket: string,
-        keys: string[]
-      ) => Promise<{ ok: boolean; message: string; results: Record<string, boolean> }>
+        keys: string[],
+        raft?: RaftQueryConfig
+      ) => Promise<{ ok: boolean; message: string; results: Record<string, IndexCheckResult> }>
+      indexSyncRaft: (
+        protocol: IndexProtocol,
+        host: string,
+        port: string,
+        indexName: string,
+        raft: { protocol: IndexProtocol; host: string; port: string; group: string }
+      ) => Promise<{ ok: boolean; message: string; count: number }>
       indexGetDoc: (
         protocol: IndexProtocol,
         host: string,
@@ -139,6 +149,7 @@ declare global {
         indexName: string
       ) => Promise<{ ok: boolean; message: string; stats: VectorIndexStats | null }>
       vectorIndexLocal: (
+        search: IndexSearchConfig,
         host: string,
         port: string,
         indexName: string,
@@ -148,6 +159,7 @@ declare global {
         overlap?: number
       ) => Promise<{ ok: boolean; message: string; count: number }>
       vectorIndexDir: (
+        search: IndexSearchConfig,
         host: string,
         port: string,
         indexName: string,
@@ -157,6 +169,7 @@ declare global {
         overlap?: number
       ) => Promise<{ ok: boolean; message: string; count: number }>
       vectorIndexS3: (
+        search: IndexSearchConfig,
         host: string,
         port: string,
         indexName: string,
@@ -168,6 +181,7 @@ declare global {
         overlap?: number
       ) => Promise<{ ok: boolean; message: string; count: number }>
       vectorSearch: (
+        search: IndexSearchConfig,
         host: string,
         port: string,
         indexName: string,
@@ -176,6 +190,7 @@ declare global {
         topK?: number
       ) => Promise<{ ok: boolean; message: string; results: VectorSearchResult[] }>
       vectorDeleteFile: (
+        search: IndexSearchConfig,
         host: string,
         port: string,
         indexName: string,
@@ -186,17 +201,12 @@ declare global {
         key?: string
       ) => Promise<{ ok: boolean; message: string }>
       vectorDeleteId: (
+        search: IndexSearchConfig,
         host: string,
         port: string,
         indexName: string,
         id: string | number
       ) => Promise<{ ok: boolean; message: string }>
-      vectorCheckFiles: (paths: string[]) => Promise<{ ok: boolean; message: string; results: Record<string, boolean> }>
-      vectorCheckS3Files: (
-        config: S3Config,
-        bucket: string,
-        keys: string[]
-      ) => Promise<{ ok: boolean; message: string; results: Record<string, boolean> }>
       onVectorProgress: (
         callback: (progress: IndexProgress) => void
       ) => () => void
@@ -241,6 +251,29 @@ export interface VersionNote {
 
 export type IndexProtocol = 'grpc' | 'rest'
 
+/** 全文索引服务（md_docs）连接参数：向量索引生成/删除/搜索时同步读写状态条目 */
+export interface IndexSearchConfig {
+  protocol: IndexProtocol
+  host: string
+  port: string
+  indexName: string
+}
+
+/** 单个文件的索引状态检查结果（全文 + 向量） */
+export interface IndexCheckResult {
+  hasFulltext: boolean
+  hasVector: boolean
+}
+
+/** 索引状态查询配置：enabled 为真时从 Raft KV 按 blake3 读取状态 */
+export interface RaftQueryConfig {
+  enabled: boolean
+  protocol: IndexProtocol
+  host: string
+  port: string
+  group: string
+}
+
 export interface IndexSearchResult {
   docId: string
   score: number
@@ -262,5 +295,6 @@ export interface VectorIndexStats {
 export interface VectorSearchResult {
   docId: string
   score: number
+  distance: number
   fields: Record<string, string>
 }

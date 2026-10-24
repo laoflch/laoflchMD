@@ -18,7 +18,7 @@ const DEFAULT_PASS = 'laoflchdb'
 const DEFAULT_SEARCH_LIMIT = 20
 
 /** 索引 schema 版本：变更字段结构时递增，ensureIndex 会检测并重建旧表 */
-const INDEX_SCHEMA_VERSION = 2
+const INDEX_SCHEMA_VERSION = 3
 
 export type IndexProtocol = 'grpc' | 'rest'
 
@@ -27,6 +27,19 @@ export interface IndexSearchResult {
   docId: string
   score: number
   fields: Record<string, string>
+}
+
+/** Raft KV 服务连接参数：应用启动时把索引状态同步到该组的 KV 中 */
+export interface RaftSyncConfig {
+  protocol: IndexProtocol
+  host: string
+  port: string
+  group: string
+}
+
+/** 索引状态查询配置：enabled 为真时改为从 Raft 按 blake3 读取状态 */
+export interface RaftQueryConfig extends RaftSyncConfig {
+  enabled: boolean
 }
 
 export interface IndexFields {
@@ -41,9 +54,15 @@ export interface IndexFields {
   key: string
   updatedAt: string
   blake3: string
+  /** 是否已生成全文索引（1/0），1 时 content 才保存文件正文 */
+  hasFulltext?: string
+  /** 是否已生成向量索引（1/0） */
+  hasVector?: string
+  /** 向量索引 chunk 信息 JSON：[{id,idx,total,snippet}]，未生成向量索引时为空数组 */
+  chunks?: string
 }
 
-function buildFields(f: IndexFields): Record<string, string> {
+export function buildFields(f: IndexFields): Record<string, string> {
   return {
     doc_id: f.docId,
     title: f.title,
@@ -55,7 +74,10 @@ function buildFields(f: IndexFields): Record<string, string> {
     bucket: f.bucket,
     key: f.key,
     updated_at: f.updatedAt,
-    blake3: f.blake3
+    blake3: f.blake3,
+    has_fulltext: f.hasFulltext ?? '0',
+    has_vector: f.hasVector ?? '0',
+    chunks: f.chunks ?? '[]'
   }
 }
 
@@ -688,14 +710,15 @@ function getClient(protocol: IndexProtocol, host: string, port: string): GrpcCli
   }
   return client
 }
+export { getClient }
 
 // ———————— 索引字段构造与本地/S3 建索引 ————————
 
-function localDocId(filePath: string): string {
+export function localDocId(filePath: string): string {
   return getHostname() + filePath
 }
 
-function s3DocId(config: S3IndexConfig, bucket: string, key: string): string {
+export function s3DocId(config: S3IndexConfig, bucket: string, key: string): string {
   let endpoint = (config.endpoint || 's3.amazonaws.com').replace(/\/+$/, '')
   if (!/^https?:\/\//i.test(endpoint)) endpoint = 'http://' + endpoint
   return `${endpoint}/${bucket}/${key}`
@@ -705,28 +728,42 @@ async function ensureIndex(
   protocol: IndexProtocol,
   host: string,
   port: string,
-  indexName: string
+  indexName: string,
+  allowRebuild: boolean
 ): Promise<{ ok: boolean; message: string; created: boolean }> {
   try {
     const client = getClient(protocol, host, port)
     const indices = await client.listIndices()
     if (indices.includes(indexName)) {
-      // 已有表：校验 schema 版本，缺少 blake3 等新字段时重建
+      // 已有表：校验字段是否齐全（tantivy schema 创建后不可追加字段）
+      let names: string[] | null = null
       try {
-        const names = await client.getIndexFields(indexName)
-        const hasAll = INDEX_FIELDS.every((f) => names.includes(f.name))
-        if (hasAll) {
-          return { ok: true, message: `索引 ${indexName} 已存在`, created: false }
-        }
-        await client.dropIndex(indexName)
-        await client.createIndex(indexName, INDEX_FIELDS)
-        return { ok: true, message: `索引 ${indexName} schema 已升级（v${INDEX_SCHEMA_VERSION}）并重建`, created: true }
-      } catch (e: any) {
-        // 无法读取字段时视为旧版本，重建一次
-        await client.dropIndex(indexName)
-        await client.createIndex(indexName, INDEX_FIELDS)
-        return { ok: true, message: `索引 ${indexName} 已重建（v${INDEX_SCHEMA_VERSION}）`, created: true }
+        names = await client.getIndexFields(indexName)
+      } catch {
+        // 读取字段失败时不擅自重建，避免误清空已有索引数据
+        names = null
       }
+      if (names === null) {
+        return {
+          ok: false,
+          message: `索引 ${indexName} 字段信息读取失败，未做任何变更（请检查服务状态后重试）`,
+          created: false
+        }
+      }
+      const hasAll = INDEX_FIELDS.every((f) => names!.includes(f.name))
+      if (hasAll) {
+        return { ok: true, message: `索引 ${indexName} 已存在`, created: false }
+      }
+      if (!allowRebuild) {
+        return {
+          ok: false,
+          message: `索引 ${indexName} 字段结构已变更（v${INDEX_SCHEMA_VERSION}），需要在全局设置中开启「索引结构变更时重建」后才能清空重建`,
+          created: false
+        }
+      }
+      await client.dropIndex(indexName)
+      await client.createIndex(indexName, INDEX_FIELDS)
+      return { ok: true, message: `索引 ${indexName} schema 已升级（v${INDEX_SCHEMA_VERSION}）并重建`, created: true }
     }
     await client.createIndex(indexName, INDEX_FIELDS)
     return { ok: true, message: `已创建索引 ${indexName}（v${INDEX_SCHEMA_VERSION}）`, created: true }
@@ -746,7 +783,10 @@ const INDEX_FIELDS: Array<{ name: string; fieldType: number; comment?: string }>
   { name: 'bucket', fieldType: 0, comment: 'S3 桶（本地为空）' },
   { name: 'key', fieldType: 0, comment: 'S3 key（本地为空）' },
   { name: 'updated_at', fieldType: 0, comment: '修改时间（ISO）' },
-  { name: 'blake3', fieldType: 0, comment: '文件内容 BLAKE3 摘要（64位hex，去重标识）' }
+  { name: 'blake3', fieldType: 0, comment: '文件内容 BLAKE3 摘要（64位hex，去重标识）' },
+  { name: 'has_fulltext', fieldType: 0, comment: '是否已生成全文索引：1/0' },
+  { name: 'has_vector', fieldType: 0, comment: '是否已生成向量索引：1/0' },
+  { name: 'chunks', fieldType: 0, comment: '向量索引 chunk 信息 JSON：[{id,idx,total,snippet}]' }
 ]
 
 // ———————— BLAKE3 摘要（hash-wasm，纯 WASM 无需原生编译） ————————
@@ -766,7 +806,7 @@ export async function computeBlake3(content: string | Buffer): Promise<string> {
 }
 
 /** 按摘要精确查询是否已索引（多字段搜索 + 返回字段二次校验） */
-async function queryByDigest(
+export async function queryByDigest(
   protocol: IndexProtocol,
   host: string,
   port: string,
@@ -782,8 +822,9 @@ async function queryByDigest(
 /**
  * 去重写入：先按 blake3 摘要删除该文件的全部旧索引条目，再添加新文档。
  * 保证同一文件在索引中只有一条记录（BLAKE3 作为去重标识）。
+ * 调用方需在 fields 中携带合并后的状态字段（has_fulltext/has_vector/chunks）。
  */
-async function upsertDocument(
+export async function upsertDocument(
   client: GrpcClient | RestClient,
   indexName: string,
   fields: Record<string, string>
@@ -852,6 +893,18 @@ async function indexLocalFile(
     } catch {
       // 保留当前时间
     }
+    // 合并旧的向量索引状态：仅生成全文索引时保留 has_vector / chunks（条目内信息不丢失）
+    let oldHasVector = '0'
+    let oldChunks = '[]'
+    try {
+      const old = await queryByDigest(protocol, host, port, indexName, digest)
+      if (old) {
+        oldHasVector = old.fields.has_vector === '1' ? '1' : '0'
+        oldChunks = old.fields.chunks || '[]'
+      }
+    } catch {
+      // 查询失败按无旧状态处理
+    }
     const fields = buildFields({
       docId: localDocId(filePath),
       title: basename(filePath, extname(filePath)) || basename(filePath),
@@ -863,7 +916,10 @@ async function indexLocalFile(
       bucket: '',
       key: '',
       updatedAt: mtime,
-      blake3: digest
+      blake3: digest,
+      hasFulltext: '1',
+      hasVector: oldHasVector,
+      chunks: oldChunks
     })
     const client = getClient(protocol, host, port)
     const docId = await upsertDocument(client, indexName, fields)
@@ -945,6 +1001,18 @@ async function indexS3File(
       return { ok: true, message: `跳过空文件：${basename(key)}`, docId: undefined }
     }
     const digest = await computeBlake3(content)
+    // 合并旧的向量索引状态：仅生成全文索引时保留 has_vector / chunks（条目内信息不丢失）
+    let oldHasVector = '0'
+    let oldChunks = '[]'
+    try {
+      const old = await queryByDigest(protocol, host, port, indexName, digest)
+      if (old) {
+        oldHasVector = old.fields.has_vector === '1' ? '1' : '0'
+        oldChunks = old.fields.chunks || '[]'
+      }
+    } catch {
+      // 查询失败按无旧状态处理
+    }
     const fields = buildFields({
       docId: s3DocId(config, bucket, key),
       title: basename(key, extname(key)) || basename(key),
@@ -956,7 +1024,10 @@ async function indexS3File(
       bucket,
       key,
       updatedAt: new Date().toISOString(),
-      blake3: digest
+      blake3: digest,
+      hasFulltext: '1',
+      hasVector: oldHasVector,
+      chunks: oldChunks
     })
     const client = getClient(protocol, host, port)
     const docId = await upsertDocument(client, indexName, fields)
@@ -968,14 +1039,206 @@ async function indexS3File(
 
 // ———————— IPC Handlers ————————
 
+// ———————— Raft KV gRPC（/laoflchdb.raft.RaftKvService/Put） ————————
+
+function encodeRaftPutRequest(key: Buffer, value: Buffer, groupId: string): Buffer {
+  return Buffer.concat([pbLenField(1, key), pbLenField(2, value), pbStrField(3, groupId)])
+}
+
+function decodeRaftPutResponse(buf: Buffer): { success: boolean; message: string } {
+  const out = { success: false, message: '' }
+  for (const f of pbParse(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool(f.value)
+    else if (f.fieldNum === 2) out.message = pbAsStr(f.value)
+  }
+  return out
+}
+
+function encodeRaftGetRequest(key: Buffer, groupId: string): Buffer {
+  return Buffer.concat([pbLenField(1, key), pbStrField(2, groupId)])
+}
+
+function decodeRaftGetResponse(buf: Buffer): { found: boolean; value: string } {
+  const out = { found: false, value: '' }
+  for (const f of pbParse(buf)) {
+    if (f.fieldNum === 1) out.found = pbAsBool(f.value)
+    else if (f.fieldNum === 2) out.value = pbAsStr(f.value)
+  }
+  return out
+}
+
+let raftGrpcClient: any = null
+let raftGrpcAddress = ''
+
+function getRaftGrpcClient(host: string, port: string): any {
+  const address = host.trim().replace(/^https?:\/\//i, '') + ':' + port.trim()
+  if (raftGrpcClient && raftGrpcAddress === address) return raftGrpcClient
+  const grpc = getGrpc()
+  const Client = grpc.makeClientConstructor(
+    {
+      put: {
+        path: '/laoflchdb.raft.RaftKvService/Put',
+        requestStream: false,
+        responseStream: false,
+        requestSerialize: (m: any) =>
+          Buffer.from(encodeRaftPutRequest(Buffer.from(m.key), Buffer.from(m.value), m.groupId)),
+        requestDeserialize: (buf: Buffer) => Buffer.from(buf),
+        responseSerialize: (m: any) => Buffer.from(m),
+        responseDeserialize: (buf: Buffer) => decodeRaftPutResponse(Buffer.from(buf))
+      },
+      get: {
+        path: '/laoflchdb.raft.RaftKvService/Get',
+        requestStream: false,
+        responseStream: false,
+        requestSerialize: (m: any) =>
+          Buffer.from(encodeRaftGetRequest(Buffer.from(m.key), m.groupId)),
+        requestDeserialize: (buf: Buffer) => Buffer.from(buf),
+        responseSerialize: (m: any) => Buffer.from(m),
+        responseDeserialize: (buf: Buffer) => decodeRaftGetResponse(Buffer.from(buf))
+      }
+    },
+    'RaftKvService'
+  )
+  raftGrpcClient = new Client(address, grpc.credentials.createInsecure())
+  raftGrpcAddress = address
+  return raftGrpcClient
+}
+
+function raftPutGrpc(cfg: RaftSyncConfig, key: string, value: string): Promise<boolean> {
+  const grpc = getGrpc()
+  const client = getRaftGrpcClient(cfg.host, cfg.port)
+  return new Promise((resolve) => {
+    client.put(
+      { key: Buffer.from(key, 'utf8'), value: Buffer.from(value, 'utf8'), groupId: cfg.group },
+      new grpc.Metadata(),
+      (err: any, res: any) => resolve(!err && !!res?.success)
+    )
+  })
+}
+
+/** 从 Raft KV 按 blake3 读取索引状态；未找到或读取失败返回 null */
+async function raftGetIndexMeta(
+  cfg: RaftSyncConfig,
+  digest: string
+): Promise<{ hasFulltext: boolean; hasVector: boolean } | null> {
+  const key = 'INDEX\u0000' + digest
+  try {
+    let raw = ''
+    if (cfg.protocol === 'grpc') {
+      const grpc = getGrpc()
+      const client = getRaftGrpcClient(cfg.host, cfg.port)
+      const res: any = await new Promise((resolve, reject) => {
+        client.get(
+          { key: Buffer.from(key, 'utf8'), groupId: cfg.group },
+          new grpc.Metadata(),
+          (err: any, r: any) => (err ? reject(err) : resolve(r))
+        )
+      })
+      if (!res?.found || !res.value) return null
+      raw = res.value
+    } else {
+      let base = cfg.host.trim().replace(/\/+$/, '')
+      if (!/^https?:\/\//i.test(base)) base = 'http://' + base
+      const url = `${base}:${cfg.port.trim()}/api/v1/raft/kv?group_id=${encodeURIComponent(
+        cfg.group
+      )}&key=${encodeURIComponent(key)}`
+      const resp = await fetch(url)
+      const json: any = await resp.json().catch(() => null)
+      if (json?.success !== true || json.data == null) return null
+      raw = String(json.data)
+    }
+    const obj = JSON.parse(raw)
+    return { hasFulltext: obj?.has_fulltext === '1', hasVector: obj?.has_vector === '1' }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 把 md_docs 中所有条目的 blake3 / has_fulltext / has_vector 同步到 Raft KV：
+ * key = "INDEX\0" + blake3，value = JSON {blake3, has_fulltext, has_vector}。
+ * 仅同步至少带一个索引标志的条目；失败条目跳过，不中断整体流程。
+ */
+async function syncIndexMetaToRaft(
+  protocol: IndexProtocol,
+  host: string,
+  port: string,
+  indexName: string,
+  raft: RaftSyncConfig
+): Promise<{ ok: boolean; message: string; count: number }> {
+  try {
+    if (!raft.host.trim() || !raft.port.trim() || !raft.group.trim()) {
+      return { ok: false, message: 'Raft 服务配置不完整', count: 0 }
+    }
+    const client = getClient(protocol, host, port)
+    // 服务端多字段查询以 OR 连接条件：命中「有全文索引」或「有向量索引」的全部条目
+    const docs = await client.searchMultiField(
+      indexName,
+      { has_fulltext: '1', has_vector: '1' },
+      100000
+    )
+    const items = docs
+      .map((d) => ({
+        blake3: d.fields?.blake3 || '',
+        has_fulltext: d.fields?.has_fulltext === '1' ? '1' : '0',
+        has_vector: d.fields?.has_vector === '1' ? '1' : '0'
+      }))
+      .filter((it) => it.blake3)
+
+    const isGrpc = raft.protocol === 'grpc'
+    let restUrl = ''
+    if (!isGrpc) {
+      let base = raft.host.trim().replace(/\/+$/, '')
+      if (!/^https?:\/\//i.test(base)) base = 'http://' + base
+      restUrl = `${base}:${raft.port.trim()}/api/v1/raft/kv`
+    }
+    const groupId = raft.group.trim()
+
+    const putOne = async (it: { blake3: string; has_fulltext: string; has_vector: string }) => {
+      const key = 'INDEX\u0000' + it.blake3
+      const value = JSON.stringify(it)
+      if (isGrpc) return raftPutGrpc(raft, key, value)
+      try {
+        const res = await fetch(restUrl, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ group_id: groupId, key, value })
+        })
+        const json: any = await res.json().catch(() => null)
+        return json?.success === true
+      } catch {
+        return false
+      }
+    }
+
+    let count = 0
+    const CONCURRENCY = 8
+    for (let i = 0; i < items.length; i += CONCURRENCY) {
+      const batch = items.slice(i, i + CONCURRENCY)
+      const results = await Promise.all(batch.map((it) => putOne(it)))
+      count += results.filter(Boolean).length
+    }
+    return { ok: true, message: '', count }
+  } catch (e: any) {
+    return { ok: false, message: e.message || '同步索引状态到 Raft 失败', count: 0 }
+  }
+}
+
 export function registerIndexSearchHandlers(): void {
   // 本机主机名（状态栏显示本地文件地址用）
   ipcMain.handle('app:hostname', () => getHostname())
 
   ipcMain.handle(
     'index:ensure',
-    async (_e, protocol: IndexProtocol, host: string, port: string, indexName: string) => {
-      return ensureIndex(protocol, host, port, indexName)
+    async (
+      _e,
+      protocol: IndexProtocol,
+      host: string,
+      port: string,
+      indexName: string,
+      allowRebuild?: boolean
+    ) => {
+      return ensureIndex(protocol, host, port, indexName, !!allowRebuild)
     }
   )
 
@@ -1032,13 +1295,23 @@ export function registerIndexSearchHandlers(): void {
     }
   )
 
-  // 批量查询文件是否已索引（按 BLAKE3 摘要精确匹配）
+  // 批量查询文件索引状态（按 BLAKE3 摘要精确匹配，返回全文/向量两个状态）
+  // raft.enabled 为真时改为从 Raft KV 读取状态，否则查 md_docs 索引条目
   ipcMain.handle(
     'index:checkFiles',
-    async (_e, protocol: IndexProtocol, host: string, port: string, indexName: string, paths: string[]) => {
-      const results: Record<string, boolean> = {}
+    async (
+      _e,
+      protocol: IndexProtocol,
+      host: string,
+      port: string,
+      indexName: string,
+      paths: string[],
+      raft?: RaftQueryConfig
+    ) => {
+      const results: Record<string, { hasFulltext: boolean; hasVector: boolean }> = {}
       const CONCURRENCY = 4
       const work = paths.filter(Boolean)
+      const useRaft = !!raft?.enabled
       let cursor = 0
       const worker = async () => {
         while (cursor < work.length) {
@@ -1047,14 +1320,22 @@ export function registerIndexSearchHandlers(): void {
             const content = readFileSync(p, 'utf8')
             if (!content.trim()) {
               // 空内容文件不参与检测，视为未索引
-              results[p] = false
+              results[p] = { hasFulltext: false, hasVector: false }
               continue
             }
             const digest = await computeBlake3(content)
+            if (useRaft) {
+              const st = await raftGetIndexMeta(raft!, digest)
+              results[p] = { hasFulltext: !!st?.hasFulltext, hasVector: !!st?.hasVector }
+              continue
+            }
             const hit = await queryByDigest(protocol, host, port, indexName, digest)
-            results[p] = !!hit
+            results[p] = {
+              hasFulltext: !!hit && hit.fields.has_fulltext === '1',
+              hasVector: !!hit && hit.fields.has_vector === '1'
+            }
           } catch {
-            results[p] = false
+            results[p] = { hasFulltext: false, hasVector: false }
           }
         }
       }
@@ -1076,11 +1357,13 @@ export function registerIndexSearchHandlers(): void {
       indexName: string,
       config: S3IndexConfig,
       bucket: string,
-      keys: string[]
+      keys: string[],
+      raft?: RaftQueryConfig
     ) => {
-      const results: Record<string, boolean> = {}
+      const results: Record<string, { hasFulltext: boolean; hasVector: boolean }> = {}
       const CONCURRENCY = 4
       const work = keys.filter(Boolean)
+      const useRaft = !!raft?.enabled
       let cursor = 0
       const worker = async () => {
         while (cursor < work.length) {
@@ -1088,15 +1371,23 @@ export function registerIndexSearchHandlers(): void {
           try {
             const content = await fetchS3Content(config, bucket, key)
             if (!content.trim()) {
-              // 空内容文件不参与检测，视为未索引
-              results[key] = false
+              // 空内容对象不参与检测，视为未索引
+              results[key] = { hasFulltext: false, hasVector: false }
               continue
             }
             const digest = await computeBlake3(content)
+            if (useRaft) {
+              const st = await raftGetIndexMeta(raft!, digest)
+              results[key] = { hasFulltext: !!st?.hasFulltext, hasVector: !!st?.hasVector }
+              continue
+            }
             const hit = await queryByDigest(protocol, host, port, indexName, digest)
-            results[key] = !!hit
+            results[key] = {
+              hasFulltext: !!hit && hit.fields.has_fulltext === '1',
+              hasVector: !!hit && hit.fields.has_vector === '1'
+            }
           } catch {
-            results[key] = false
+            results[key] = { hasFulltext: false, hasVector: false }
           }
         }
       }
@@ -1160,19 +1451,51 @@ export function registerIndexSearchHandlers(): void {
           return { ok: false, message: `无效的文档 ID：${docId || '（空）'}` }
         }
         const client = getClient(protocol, host, port)
+        // 删除前先读取旧条目，判断删除后是否仍需保留向量索引状态
+        let oldEntry: IndexSearchResult | null = null
+        const digest = fields?.blake3
+        if (digest) {
+          try {
+            oldEntry = await queryByDigest(protocol, host, port, indexName, digest)
+          } catch {
+            oldEntry = null
+          }
+        }
         await client.deleteDocument(indexName, docId)
         // 删除后按 BLAKE3 摘要验证真正生效：若该摘要仍命中本条，说明删除未持久化
-        const digest = fields?.blake3
         if (digest) {
           const remaining = await client.searchMultiField(indexName, { blake3: digest }, 20)
           if (remaining.some((r) => r.docId === docId && r.fields.blake3 === digest)) {
             return { ok: false, message: '删除未生效：服务端仍存在该条目（doc_id 不匹配？）' }
           }
         }
+        // 该文件仍有向量索引时保留条目：仅清除全文状态与正文（不全文索引就不保存文件内容）
+        if (oldEntry && oldEntry.fields.has_vector === '1') {
+          const merged: Record<string, string> = { ...oldEntry.fields }
+          merged.has_fulltext = '0'
+          merged.content = ''
+          await client.addDocument(indexName, '', merged)
+          return { ok: true, message: '已删除全文索引（保留向量索引条目）' }
+        }
         return { ok: true, message: '已删除索引文档' }
       } catch (e: any) {
         return { ok: false, message: e.message || '删除索引文档失败' }
       }
+    }
+  )
+
+  // 应用启动后异步同步索引状态（blake3/has_fulltext/has_vector）到 Raft KV
+  ipcMain.handle(
+    'index:syncRaft',
+    async (
+      _e,
+      protocol: IndexProtocol,
+      host: string,
+      port: string,
+      indexName: string,
+      raft: RaftSyncConfig
+    ) => {
+      return syncIndexMetaToRaft(protocol, host, port, indexName, raft)
     }
   )
 }

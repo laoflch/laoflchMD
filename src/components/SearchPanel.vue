@@ -4,7 +4,7 @@ import { useSettingsStore } from '../stores/settings'
 import { useEditorStore } from '../stores/editor'
 import { useS3Store } from '../stores/s3'
 import { useToastStore } from '../stores/toast'
-import type { IndexSearchResult, VectorSearchResult, VectorIndexStats } from '../types'
+import type { IndexSearchResult, VectorSearchResult, VectorIndexStats, IndexSearchConfig } from '../types'
 
 const settings = useSettingsStore()
 const editor = useEditorStore()
@@ -44,6 +44,14 @@ const port = computed(() =>
 )
 const protocolLabel = computed(() => (settings.indexProtocol === 'grpc' ? 'gRPC' : 'REST'))
 
+// 全文索引服务（md_docs）连接参数：向量索引的生成/删除/搜索也走该服务保存/反查状态
+const searchCfg = computed<IndexSearchConfig>(() => ({
+  protocol: settings.indexProtocol,
+  host: host.value,
+  port: port.value,
+  indexName: settings.indexName
+}))
+
 // 全文索引功能是否关闭（索引服务总开关 / 全文索引子开关）
 const fulltextOff = computed(() => !settings.indexEnabled || !settings.fulltextEnabled)
 // 向量索引功能是否关闭（索引服务总开关 / 向量文本索引子开关）
@@ -72,7 +80,13 @@ async function ensureIndex() {
   fulltextError.value = null
   indexMessage.value = null
   try {
-    const res = await window.api.indexEnsure(settings.indexProtocol, host.value, port.value, settings.indexName)
+    const res = await window.api.indexEnsure(
+      settings.indexProtocol,
+      host.value,
+      port.value,
+      settings.indexName,
+      settings.indexRebuildOnSchemaChange
+    )
     if (res.ok) {
       // 索引 md_docs 已存在等消息移到右上角，绿色提示，8 秒后移除
       indexMessage.value = res.message
@@ -139,15 +153,19 @@ async function searchVector(q: string) {
   vectorError.value = null
   try {
     const res = await window.api.vectorSearch(
+      searchCfg.value,
       settings.grpcHost,
       settings.grpcPort,
       settings.vectorIndexName,
       settings.vectorModelName,
       q,
-      30
+      settings.vectorSearchTopK
     )
     if (res.ok) {
-      vectorResults.value = res.results
+      // 距离上限筛选（0 表示不筛选），再按距离从小到大排序（距离越小越相关）
+      const maxDistance = settings.vectorSearchMaxDistance
+      const kept = maxDistance > 0 ? res.results.filter((r) => r.distance < maxDistance) : res.results
+      vectorResults.value = [...kept].sort((a, b) => a.distance - b.distance)
     } else {
       vectorError.value = res.message
       vectorResults.value = []
@@ -248,7 +266,7 @@ async function doDelete() {
   try {
     const res =
       target.tab === 'vector'
-        ? await window.api.vectorDeleteId(settings.grpcHost, settings.grpcPort, settings.vectorIndexName, target.item.docId)
+        ? await window.api.vectorDeleteId(searchCfg.value, settings.grpcHost, settings.grpcPort, settings.vectorIndexName, target.item.docId)
         : await window.api.indexDeleteDoc(
             settings.indexProtocol,
             host.value,
@@ -422,6 +440,9 @@ watch(vectorOff, (off) => {
         <div class="search-results">
           <template v-if="vectorResults.length > 0">
             <div v-for="(r, i) in vectorResults" :key="i" class="result-item" @click="openResult(r)">
+              <span v-if="r.distance != null" class="result-distance" :title="'距离：' + r.distance.toFixed(4)">
+                {{ r.distance.toFixed(3) }}
+              </span>
               <button
                 class="result-close"
                 :class="{ deleting: deletingId === r.docId }"
@@ -439,7 +460,6 @@ watch(vectorOff, (off) => {
                 <span class="kind-tag" :class="kindOf(r)">{{ kindOf(r) === 's3' ? 'S3' : '本地' }}</span>
                 <span class="result-path">{{ pathOf(r) }}</span>
                 <span v-if="r.fields?.chunk_index" class="result-chunk">{{ Number(r.fields.chunk_index) + 1 }}/{{ r.fields.total_chunks || '?' }} 块</span>
-                <span v-if="r.score" class="result-score">{{ (r.score * 100).toFixed(1) }}%</span>
               </div>
             </div>
           </template>
@@ -827,6 +847,19 @@ watch(vectorOff, (off) => {
 .result-close:hover:not(:disabled) {
   background: rgba(220, 53, 69, 0.15);
   color: #dc3545;
+}
+
+/* 右上角关闭按钮左侧的向量距离标签（距离越小越相关） */
+.result-distance {
+  position: absolute;
+  top: 6px;
+  right: 26px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--accent-color);
+  background: rgba(86, 156, 214, 0.12);
+  border-radius: 3px;
+  padding: 2px 5px;
 }
 
 .result-close.deleting {

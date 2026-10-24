@@ -95,8 +95,8 @@ contextBridge.exposeInMainWorld('api', {
   getHostname: () => ipcRenderer.invoke('app:hostname'),
 
   // Full-text search (laoflchdb-rust)
-  indexEnsure: (protocol: 'grpc' | 'rest', host: string, port: string, indexName: string) =>
-    ipcRenderer.invoke('index:ensure', protocol, host, port, indexName),
+  indexEnsure: (protocol: 'grpc' | 'rest', host: string, port: string, indexName: string, allowRebuild?: boolean) =>
+    ipcRenderer.invoke('index:ensure', protocol, host, port, indexName, allowRebuild),
   indexSearch: (
     protocol: 'grpc' | 'rest',
     host: string,
@@ -118,8 +118,14 @@ contextBridge.exposeInMainWorld('api', {
     bucket: string,
     key: string
   ) => ipcRenderer.invoke('index:indexS3', protocol, host, port, indexName, config, bucket, key),
-  indexCheckFiles: (protocol: 'grpc' | 'rest', host: string, port: string, indexName: string, paths: string[]) =>
-    ipcRenderer.invoke('index:checkFiles', protocol, host, port, indexName, paths),
+  indexCheckFiles: (
+    protocol: 'grpc' | 'rest',
+    host: string,
+    port: string,
+    indexName: string,
+    paths: string[],
+    raft?: { enabled: boolean; protocol: 'grpc' | 'rest'; host: string; port: string; group: string }
+  ) => ipcRenderer.invoke('index:checkFiles', protocol, host, port, indexName, paths, raft),
   indexCheckS3Files: (
     protocol: 'grpc' | 'rest',
     host: string,
@@ -127,8 +133,9 @@ contextBridge.exposeInMainWorld('api', {
     indexName: string,
     config: any,
     bucket: string,
-    keys: string[]
-  ) => ipcRenderer.invoke('index:checkS3Files', protocol, host, port, indexName, config, bucket, keys),
+    keys: string[],
+    raft?: { enabled: boolean; protocol: 'grpc' | 'rest'; host: string; port: string; group: string }
+  ) => ipcRenderer.invoke('index:checkS3Files', protocol, host, port, indexName, config, bucket, keys, raft),
   indexGetDoc: (
     protocol: 'grpc' | 'rest',
     host: string,
@@ -142,6 +149,13 @@ contextBridge.exposeInMainWorld('api', {
   ) => ipcRenderer.invoke('index:getDoc', protocol, host, port, indexName, kind, path, config, bucket, key),
   indexDeleteDoc: (protocol: 'grpc' | 'rest', host: string, port: string, indexName: string, docId: string, fields?: Record<string, string>) =>
     ipcRenderer.invoke('index:deleteDoc', protocol, host, port, indexName, docId, fields),
+  indexSyncRaft: (
+    protocol: 'grpc' | 'rest',
+    host: string,
+    port: string,
+    indexName: string,
+    raft: { protocol: 'grpc' | 'rest'; host: string; port: string; group: string }
+  ) => ipcRenderer.invoke('index:syncRaft', protocol, host, port, indexName, raft),
   // 目录建索引进度事件（主进程逐文件推送）
   onIndexProgress: (callback: (progress: { done: number; total: number; fileName: string }) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, progress: { done: number; total: number; fileName: string }) =>
@@ -150,10 +164,12 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('index:progress', handler)
   },
 
-  // Vector text index (laoflchdb-rust, gRPC)
+  // Vector text index (laoflchdb-rust, gRPC)。search 为全文索引服务（md_docs）连接参数，
+  // 用于同步保存向量状态与 chunk 信息
   vectorGetInfo: (host: string, port: string, indexName: string) =>
     ipcRenderer.invoke('vector:getInfo', host, port, indexName),
   vectorIndexLocal: (
+    search: { protocol: 'grpc' | 'rest'; host: string; port: string; indexName: string },
     host: string,
     port: string,
     indexName: string,
@@ -161,8 +177,9 @@ contextBridge.exposeInMainWorld('api', {
     filePath: string,
     chunkSize?: number,
     overlap?: number
-  ) => ipcRenderer.invoke('vector:indexLocal', host, port, indexName, modelName, filePath, chunkSize, overlap),
+  ) => ipcRenderer.invoke('vector:indexLocal', search, host, port, indexName, modelName, filePath, chunkSize, overlap),
   vectorIndexDir: (
+    search: { protocol: 'grpc' | 'rest'; host: string; port: string; indexName: string },
     host: string,
     port: string,
     indexName: string,
@@ -170,8 +187,9 @@ contextBridge.exposeInMainWorld('api', {
     dirPath: string,
     chunkSize?: number,
     overlap?: number
-  ) => ipcRenderer.invoke('vector:indexDir', host, port, indexName, modelName, dirPath, chunkSize, overlap),
+  ) => ipcRenderer.invoke('vector:indexDir', search, host, port, indexName, modelName, dirPath, chunkSize, overlap),
   vectorIndexS3: (
+    search: { protocol: 'grpc' | 'rest'; host: string; port: string; indexName: string },
     host: string,
     port: string,
     indexName: string,
@@ -181,16 +199,18 @@ contextBridge.exposeInMainWorld('api', {
     key: string,
     chunkSize?: number,
     overlap?: number
-  ) => ipcRenderer.invoke('vector:indexS3', host, port, indexName, modelName, config, bucket, key, chunkSize, overlap),
+  ) => ipcRenderer.invoke('vector:indexS3', search, host, port, indexName, modelName, config, bucket, key, chunkSize, overlap),
   vectorSearch: (
+    search: { protocol: 'grpc' | 'rest'; host: string; port: string; indexName: string },
     host: string,
     port: string,
     indexName: string,
     modelName: string,
     query: string,
     topK?: number
-  ) => ipcRenderer.invoke('vector:search', host, port, indexName, modelName, query, topK),
+  ) => ipcRenderer.invoke('vector:search', search, host, port, indexName, modelName, query, topK),
   vectorDeleteFile: (
+    search: { protocol: 'grpc' | 'rest'; host: string; port: string; indexName: string },
     host: string,
     port: string,
     indexName: string,
@@ -199,12 +219,14 @@ contextBridge.exposeInMainWorld('api', {
     config?: any,
     bucket?: string,
     key?: string
-  ) => ipcRenderer.invoke('vector:deleteFile', host, port, indexName, kind, path, config, bucket, key),
-  vectorDeleteId: (host: string, port: string, indexName: string, id: string | number) =>
-    ipcRenderer.invoke('vector:deleteId', host, port, indexName, id),
-  vectorCheckFiles: (paths: string[]) => ipcRenderer.invoke('vector:checkFiles', paths),
-  vectorCheckS3Files: (config: any, bucket: string, keys: string[]) =>
-    ipcRenderer.invoke('vector:checkS3Files', config, bucket, keys),
+  ) => ipcRenderer.invoke('vector:deleteFile', search, host, port, indexName, kind, path, config, bucket, key),
+  vectorDeleteId: (
+    search: { protocol: 'grpc' | 'rest'; host: string; port: string; indexName: string },
+    host: string,
+    port: string,
+    indexName: string,
+    id: string | number
+  ) => ipcRenderer.invoke('vector:deleteId', search, host, port, indexName, id),
   onVectorProgress: (callback: (progress: { done: number; total: number; fileName: string }) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, progress: { done: number; total: number; fileName: string }) =>
       callback(progress)

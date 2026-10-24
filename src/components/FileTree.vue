@@ -3,7 +3,7 @@ import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useEditorStore } from '../stores/editor'
 import { useSettingsStore } from '../stores/settings'
 import { useToastStore } from '../stores/toast'
-import type { FileEntry, IndexSearchResult } from '../types'
+import type { FileEntry, IndexSearchConfig, IndexSearchResult } from '../types'
 import TreeNodeItem from './TreeNodeItem.vue'
 import IndexInfoDialog from './IndexInfoDialog.vue'
 
@@ -55,7 +55,6 @@ async function openDir(dirPath: string) {
   // Save to localStorage for persistence across restarts
   localStorage.setItem('lastOpenedDir', dirPath)
   checkIndexed(treeData.value)
-  checkVectorIndexed(treeData.value)
 }
 
 async function openDirectory() {
@@ -126,7 +125,8 @@ const vectorOff = computed(() => !settings.indexEnabled || !settings.vectorTextE
 watch([() => settings.indexEnabled, () => settings.fulltextEnabled], () => {
   if (fulltextOff.value) {
     indexedPaths.value = new Set()
-  } else if (rootDir.value) {
+  }
+  if (rootDir.value) {
     checkIndexed(treeData.value)
   }
 })
@@ -135,8 +135,9 @@ watch([() => settings.indexEnabled, () => settings.fulltextEnabled], () => {
 watch([() => settings.indexEnabled, () => settings.vectorTextEnabled], () => {
   if (vectorOff.value) {
     vectorIndexedPaths.value = new Set()
-  } else if (rootDir.value) {
-    checkVectorIndexed(treeData.value)
+  }
+  if (rootDir.value) {
+    checkIndexed(treeData.value)
   }
 })
 
@@ -293,38 +294,67 @@ async function handleIndex() {
   }
 }
 
-// 全文检索：异步查询目录下所有 md 文件是否已索引（按 BLAKE3 摘要精确匹配）
+// 索引状态检查：统一查询「全文」+「向量」两个状态（按 BLAKE3 摘要精确匹配）
 const indexedPaths = ref<Set<string>>(new Set())
+const vectorIndexedPaths = ref<Set<string>>(new Set())
 let checkSeq = 0
 
+// 全文索引服务（md_docs）连接参数：向量索引的生成/删除也走该服务保存状态
+function searchCfg(): IndexSearchConfig {
+  const protocol = settings.indexProtocol
+  return {
+    protocol,
+    host: protocol === 'grpc' ? settings.grpcHost : settings.restHost,
+    port: protocol === 'grpc' ? settings.grpcPort : settings.restPort,
+    indexName: settings.indexName
+  }
+}
+
+// 索引状态查询配置：开启 Raft 同步后，状态改为从 Raft 按 blake3 读取
+function raftQueryCfg() {
+  return {
+    enabled: settings.raftSyncEnabled,
+    protocol: settings.raftProtocol,
+    host: settings.raftHost,
+    port: settings.raftProtocol === 'grpc' ? settings.raftGrpcPort : settings.raftRestPort,
+    group: settings.raftGroup
+  }
+}
+
 async function checkIndexed(files: FileEntry[]) {
-  // 索引服务关闭时不检测，清空「全文」标签
-  if (!settings.indexEnabled || !settings.fulltextEnabled) {
+  // 索引服务关闭时不检测，清空「全文」「向量」标签
+  if (!settings.indexEnabled) {
     indexedPaths.value = new Set()
+    vectorIndexedPaths.value = new Set()
     return
   }
   const mdFiles = files.filter((f) => f.isMarkdown && !f.isDirectory)
   if (mdFiles.length === 0) return
   const seq = ++checkSeq
   try {
-    const protocol = settings.indexProtocol
-    const host = protocol === 'grpc' ? settings.grpcHost : settings.restHost
-    const port = protocol === 'grpc' ? settings.grpcPort : settings.restPort
     const res = await window.api.indexCheckFiles(
-      protocol,
-      host,
-      port,
-      settings.indexName,
-      mdFiles.map((f) => f.path)
+      searchCfg().protocol,
+      searchCfg().host,
+      searchCfg().port,
+      searchCfg().indexName,
+      mdFiles.map((f) => f.path),
+      raftQueryCfg()
     )
     if (seq !== checkSeq) return // 丢弃过期结果
     if (!res.ok) return
-    const next = new Set(indexedPaths.value)
-    for (const [p, indexed] of Object.entries(res.results)) {
-      if (indexed) next.add(p)
-      else next.delete(p)
+    const nextFt = new Set(indexedPaths.value)
+    const nextVec = new Set(vectorIndexedPaths.value)
+    for (const [p, st] of Object.entries(res.results)) {
+      if (st.hasFulltext) nextFt.add(p)
+      else nextFt.delete(p)
+      if (st.hasVector) nextVec.add(p)
+      else nextVec.delete(p)
     }
-    indexedPaths.value = next
+    // 子开关关闭时不显示对应标签
+    if (!settings.fulltextEnabled) nextFt.clear()
+    if (!settings.vectorTextEnabled) nextVec.clear()
+    indexedPaths.value = nextFt
+    vectorIndexedPaths.value = nextVec
   } catch {
     // 服务不可达等静默忽略，标签不显示
   }
@@ -332,7 +362,6 @@ async function checkIndexed(files: FileEntry[]) {
 
 function handleChildrenLoaded(entries: FileEntry[]) {
   checkIndexed(entries)
-  checkVectorIndexed(entries)
 }
 
 // 向量索引：生成向量索引（仅 gRPC，复用 grpc 地址/端口）
@@ -362,6 +391,7 @@ async function handleVectorIndex() {
       })
       try {
         const res = await window.api.vectorIndexDir(
+          searchCfg(),
           settings.grpcHost,
           settings.grpcPort,
           settings.vectorIndexName,
@@ -371,12 +401,13 @@ async function handleVectorIndex() {
           overlap
         )
         toastStore.pushToast(res.ok ? 'ok' : 'err', res.message)
-        if (res.ok) checkVectorIndexed(treeData.value)
+        if (res.ok) checkIndexed(treeData.value)
       } finally {
         unsubscribe()
       }
     } else {
       const res = await window.api.vectorIndexLocal(
+        searchCfg(),
         settings.grpcHost,
         settings.grpcPort,
         settings.vectorIndexName,
@@ -407,6 +438,7 @@ async function handleVectorDelete() {
   if (!targetPath) return
   try {
     const res = await window.api.vectorDeleteFile(
+      searchCfg(),
       settings.grpcHost,
       settings.grpcPort,
       settings.vectorIndexName,
@@ -421,34 +453,6 @@ async function handleVectorDelete() {
     }
   } catch (e: unknown) {
     toastStore.pushToast('err', e instanceof Error ? e.message : '删除向量索引失败')
-  }
-}
-
-// 向量索引：已生成向量索引的文件路径集合（本地映射查询，无需访问服务端）
-const vectorIndexedPaths = ref<Set<string>>(new Set())
-let vectorCheckSeq = 0
-
-async function checkVectorIndexed(files: FileEntry[]) {
-  // 索引服务关闭时不检测，清空「向量」标签
-  if (!settings.indexEnabled || !settings.vectorTextEnabled) {
-    vectorIndexedPaths.value = new Set()
-    return
-  }
-  const mdFiles = files.filter((f) => f.isMarkdown && !f.isDirectory)
-  if (mdFiles.length === 0) return
-  const seq = ++vectorCheckSeq
-  try {
-    const res = await window.api.vectorCheckFiles(mdFiles.map((f) => f.path))
-    if (seq !== vectorCheckSeq) return // 丢弃过期结果
-    if (!res.ok) return
-    const next = new Set(vectorIndexedPaths.value)
-    for (const [p, indexed] of Object.entries(res.results)) {
-      if (indexed) next.add(p)
-      else next.delete(p)
-    }
-    vectorIndexedPaths.value = next
-  } catch {
-    // 本地映射读取失败等静默忽略，标签不显示
   }
 }
 

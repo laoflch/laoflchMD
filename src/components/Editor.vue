@@ -40,6 +40,44 @@ watch(
   { immediate: true }
 )
 
+// 预览模式内容渲染：手动写入 innerHTML，避免 v-html 整体覆盖正在编辑的 contenteditable DOM。
+// 用户编辑后（previewDirty=true）renderedHtml 更新不再覆盖，直到保存成功（isModified=false）再允许刷新，
+// 确保 Ctrl+S 时 getEditableHtml() 读到的是用户编辑后的完整内容。
+const previewDirty = ref(false)
+
+watch(
+  [() => store.viewMode, () => store.renderedHtml, editableRef],
+  () => {
+    const el = editableRef.value
+    if (!el || store.viewMode !== 'preview') return
+    if (previewDirty.value) return
+    el.innerHTML = store.renderedHtml
+  },
+  { immediate: true }
+)
+
+// 保存成功（isModified 变 false）后，允许渲染结果刷新到预览 DOM
+watch(
+  () => store.isModified,
+  (m) => {
+    if (!m) previewDirty.value = false
+  }
+)
+
+// 重新进入预览模式时：重置 dirty，并用最新 content 渲染后再写入，
+// 避免异步渲染未完成时预览显示旧内容（如编辑产生的换行「消失」）
+watch(
+  () => store.viewMode,
+  async (m, old) => {
+    if (m === 'preview' && old !== 'preview') {
+      previewDirty.value = false
+      const html = await store.ensureRendered()
+      const el = editableRef.value
+      if (el) el.innerHTML = html
+    }
+  }
+)
+
 function handleCtrlWheel(e: WheelEvent) {
   if (!e.ctrlKey) return
   e.preventDefault()
@@ -432,8 +470,9 @@ function onTextareaKeydown(event: KeyboardEvent) {
   }
 }
 
-// Preview editable mode: 每次内容变动实时标记为未保存
+// Preview editable mode: 每次内容变动实时标记为未保存（并阻止渲染结果覆盖编辑中的 DOM）
 function onPreviewInput() {
+  previewDirty.value = true
   store.markModified()
 }
 
@@ -446,6 +485,31 @@ function onPreviewBlur(e: FocusEvent) {
 
 // Preview editable mode: Ctrl+Enter to commit, Ctrl+Z/Y handled by store
 function onPreviewKeydown(e: KeyboardEvent) {
+  // 代码块内 Enter：Chrome 在 Shiki 的块级 span.line 结构里按 Enter 只拆分块元素、
+  // 不插入 \n 文本节点，导致 pre.textContent 无换行、turndown 提取后保存丢失。
+  // 这里手动在光标处插入换行文本节点，保证 DOM 里真实存在换行。
+  if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey) {
+    const sel = window.getSelection()
+    const anchor = sel?.anchorNode
+    if (anchor && editableRef.value?.contains(anchor)) {
+      const el = anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : (anchor as Element)
+      const preEl = el?.closest?.('pre')
+      if (preEl) {
+        e.preventDefault()
+        const range = sel!.getRangeAt(0)
+        range.deleteContents()
+        const nl = document.createTextNode('\n')
+        range.insertNode(nl)
+        range.setStartAfter(nl)
+        range.collapse(true)
+        sel!.removeAllRanges()
+        sel!.addRange(range)
+        // Range.insertNode 不触发 input 事件，手动派发以驱动 dirty/保存同步
+        editableRef.value?.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertLineBreak' }))
+        return
+      }
+    }
+  }
   // Ctrl+Enter = 提交修改（同步到 Markdown 并重渲染）
   if (e.ctrlKey && e.key === 'Enter') {
     e.preventDefault()
@@ -675,7 +739,6 @@ watch(
           ref="editableRef"
           class="preview-content markdown-body"
           :contenteditable="true"
-          v-html="store.renderedHtml"
           @input="onPreviewInput"
           @blur="onPreviewBlur"
           @keydown="onPreviewKeydown"

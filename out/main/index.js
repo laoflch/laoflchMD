@@ -137,7 +137,7 @@ function registerS3Handlers() {
 const DEFAULT_USER$1 = "admin";
 const DEFAULT_PASS$1 = "laoflchdb";
 const DEFAULT_SEARCH_LIMIT$1 = 20;
-const INDEX_SCHEMA_VERSION = 2;
+const INDEX_SCHEMA_VERSION = 3;
 function buildFields(f) {
   return {
     doc_id: f.docId,
@@ -150,7 +150,10 @@ function buildFields(f) {
     bucket: f.bucket,
     key: f.key,
     updated_at: f.updatedAt,
-    blake3: f.blake3
+    blake3: f.blake3,
+    has_fulltext: f.hasFulltext ?? "0",
+    has_vector: f.hasVector ?? "0",
+    chunks: f.chunks ?? "[]"
   };
 }
 function pbVarint$1(value) {
@@ -638,25 +641,38 @@ function s3DocId(config, bucket, key) {
   if (!/^https?:\/\//i.test(endpoint)) endpoint = "http://" + endpoint;
   return `${endpoint}/${bucket}/${key}`;
 }
-async function ensureIndex(protocol, host, port, indexName) {
+async function ensureIndex(protocol, host, port, indexName, allowRebuild) {
   try {
     const client = getClient(protocol, host, port);
     const indices = await client.listIndices();
     if (indices.includes(indexName)) {
+      let names = null;
       try {
-        const names = await client.getIndexFields(indexName);
-        const hasAll = INDEX_FIELDS.every((f) => names.includes(f.name));
-        if (hasAll) {
-          return { ok: true, message: `索引 ${indexName} 已存在`, created: false };
-        }
-        await client.dropIndex(indexName);
-        await client.createIndex(indexName, INDEX_FIELDS);
-        return { ok: true, message: `索引 ${indexName} schema 已升级（v${INDEX_SCHEMA_VERSION}）并重建`, created: true };
-      } catch (e) {
-        await client.dropIndex(indexName);
-        await client.createIndex(indexName, INDEX_FIELDS);
-        return { ok: true, message: `索引 ${indexName} 已重建（v${INDEX_SCHEMA_VERSION}）`, created: true };
+        names = await client.getIndexFields(indexName);
+      } catch {
+        names = null;
       }
+      if (names === null) {
+        return {
+          ok: false,
+          message: `索引 ${indexName} 字段信息读取失败，未做任何变更（请检查服务状态后重试）`,
+          created: false
+        };
+      }
+      const hasAll = INDEX_FIELDS.every((f) => names.includes(f.name));
+      if (hasAll) {
+        return { ok: true, message: `索引 ${indexName} 已存在`, created: false };
+      }
+      if (!allowRebuild) {
+        return {
+          ok: false,
+          message: `索引 ${indexName} 字段结构已变更（v${INDEX_SCHEMA_VERSION}），需要在全局设置中开启「索引结构变更时重建」后才能清空重建`,
+          created: false
+        };
+      }
+      await client.dropIndex(indexName);
+      await client.createIndex(indexName, INDEX_FIELDS);
+      return { ok: true, message: `索引 ${indexName} schema 已升级（v${INDEX_SCHEMA_VERSION}）并重建`, created: true };
     }
     await client.createIndex(indexName, INDEX_FIELDS);
     return { ok: true, message: `已创建索引 ${indexName}（v${INDEX_SCHEMA_VERSION}）`, created: true };
@@ -675,7 +691,10 @@ const INDEX_FIELDS = [
   { name: "bucket", fieldType: 0, comment: "S3 桶（本地为空）" },
   { name: "key", fieldType: 0, comment: "S3 key（本地为空）" },
   { name: "updated_at", fieldType: 0, comment: "修改时间（ISO）" },
-  { name: "blake3", fieldType: 0, comment: "文件内容 BLAKE3 摘要（64位hex，去重标识）" }
+  { name: "blake3", fieldType: 0, comment: "文件内容 BLAKE3 摘要（64位hex，去重标识）" },
+  { name: "has_fulltext", fieldType: 0, comment: "是否已生成全文索引：1/0" },
+  { name: "has_vector", fieldType: 0, comment: "是否已生成向量索引：1/0" },
+  { name: "chunks", fieldType: 0, comment: "向量索引 chunk 信息 JSON：[{id,idx,total,snippet}]" }
 ];
 let hashWasmModule$1 = null;
 function getHashWasm$1() {
@@ -747,6 +766,16 @@ async function indexLocalFile(protocol, host, port, indexName, filePath) {
       mtime = fs.statSync(filePath).mtime.toISOString();
     } catch {
     }
+    let oldHasVector = "0";
+    let oldChunks = "[]";
+    try {
+      const old = await queryByDigest(protocol, host, port, indexName, digest);
+      if (old) {
+        oldHasVector = old.fields.has_vector === "1" ? "1" : "0";
+        oldChunks = old.fields.chunks || "[]";
+      }
+    } catch {
+    }
     const fields = buildFields({
       docId: localDocId(filePath),
       title: path.basename(filePath, path.extname(filePath)) || path.basename(filePath),
@@ -758,7 +787,10 @@ async function indexLocalFile(protocol, host, port, indexName, filePath) {
       bucket: "",
       key: "",
       updatedAt: mtime,
-      blake3: digest
+      blake3: digest,
+      hasFulltext: "1",
+      hasVector: oldHasVector,
+      chunks: oldChunks
     });
     const client = getClient(protocol, host, port);
     const docId = await upsertDocument(client, indexName, fields);
@@ -812,6 +844,16 @@ async function indexS3File(protocol, host, port, indexName, config, bucket, key)
       return { ok: true, message: `跳过空文件：${path.basename(key)}`, docId: void 0 };
     }
     const digest = await computeBlake3(content);
+    let oldHasVector = "0";
+    let oldChunks = "[]";
+    try {
+      const old = await queryByDigest(protocol, host, port, indexName, digest);
+      if (old) {
+        oldHasVector = old.fields.has_vector === "1" ? "1" : "0";
+        oldChunks = old.fields.chunks || "[]";
+      }
+    } catch {
+    }
     const fields = buildFields({
       docId: s3DocId(config, bucket, key),
       title: path.basename(key, path.extname(key)) || path.basename(key),
@@ -823,7 +865,10 @@ async function indexS3File(protocol, host, port, indexName, config, bucket, key)
       bucket,
       key,
       updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-      blake3: digest
+      blake3: digest,
+      hasFulltext: "1",
+      hasVector: oldHasVector,
+      chunks: oldChunks
     });
     const client = getClient(protocol, host, port);
     const docId = await upsertDocument(client, indexName, fields);
@@ -832,12 +877,163 @@ async function indexS3File(protocol, host, port, indexName, config, bucket, key)
     return { ok: false, message: `索引 ${path.basename(key)} 失败：${e.message || e}`, docId: void 0 };
   }
 }
+function encodeRaftPutRequest(key, value, groupId) {
+  return Buffer.concat([pbLenField$1(1, key), pbLenField$1(2, value), pbStrField$1(3, groupId)]);
+}
+function decodeRaftPutResponse(buf) {
+  const out = { success: false, message: "" };
+  for (const f of pbParse$1(buf)) {
+    if (f.fieldNum === 1) out.success = pbAsBool$1(f.value);
+    else if (f.fieldNum === 2) out.message = pbAsStr$1(f.value);
+  }
+  return out;
+}
+function encodeRaftGetRequest(key, groupId) {
+  return Buffer.concat([pbLenField$1(1, key), pbStrField$1(2, groupId)]);
+}
+function decodeRaftGetResponse(buf) {
+  const out = { found: false, value: "" };
+  for (const f of pbParse$1(buf)) {
+    if (f.fieldNum === 1) out.found = pbAsBool$1(f.value);
+    else if (f.fieldNum === 2) out.value = pbAsStr$1(f.value);
+  }
+  return out;
+}
+let raftGrpcClient = null;
+let raftGrpcAddress = "";
+function getRaftGrpcClient(host, port) {
+  const address = host.trim().replace(/^https?:\/\//i, "") + ":" + port.trim();
+  if (raftGrpcClient && raftGrpcAddress === address) return raftGrpcClient;
+  const grpc = getGrpc$1();
+  const Client = grpc.makeClientConstructor(
+    {
+      put: {
+        path: "/laoflchdb.raft.RaftKvService/Put",
+        requestStream: false,
+        responseStream: false,
+        requestSerialize: (m) => Buffer.from(encodeRaftPutRequest(Buffer.from(m.key), Buffer.from(m.value), m.groupId)),
+        requestDeserialize: (buf) => Buffer.from(buf),
+        responseSerialize: (m) => Buffer.from(m),
+        responseDeserialize: (buf) => decodeRaftPutResponse(Buffer.from(buf))
+      },
+      get: {
+        path: "/laoflchdb.raft.RaftKvService/Get",
+        requestStream: false,
+        responseStream: false,
+        requestSerialize: (m) => Buffer.from(encodeRaftGetRequest(Buffer.from(m.key), m.groupId)),
+        requestDeserialize: (buf) => Buffer.from(buf),
+        responseSerialize: (m) => Buffer.from(m),
+        responseDeserialize: (buf) => decodeRaftGetResponse(Buffer.from(buf))
+      }
+    },
+    "RaftKvService"
+  );
+  raftGrpcClient = new Client(address, grpc.credentials.createInsecure());
+  raftGrpcAddress = address;
+  return raftGrpcClient;
+}
+function raftPutGrpc(cfg, key, value) {
+  const grpc = getGrpc$1();
+  const client = getRaftGrpcClient(cfg.host, cfg.port);
+  return new Promise((resolve) => {
+    client.put(
+      { key: Buffer.from(key, "utf8"), value: Buffer.from(value, "utf8"), groupId: cfg.group },
+      new grpc.Metadata(),
+      (err, res) => resolve(!err && !!res?.success)
+    );
+  });
+}
+async function raftGetIndexMeta(cfg, digest) {
+  const key = "INDEX\0" + digest;
+  try {
+    let raw = "";
+    if (cfg.protocol === "grpc") {
+      const grpc = getGrpc$1();
+      const client = getRaftGrpcClient(cfg.host, cfg.port);
+      const res = await new Promise((resolve, reject) => {
+        client.get(
+          { key: Buffer.from(key, "utf8"), groupId: cfg.group },
+          new grpc.Metadata(),
+          (err, r) => err ? reject(err) : resolve(r)
+        );
+      });
+      if (!res?.found || !res.value) return null;
+      raw = res.value;
+    } else {
+      let base = cfg.host.trim().replace(/\/+$/, "");
+      if (!/^https?:\/\//i.test(base)) base = "http://" + base;
+      const url = `${base}:${cfg.port.trim()}/api/v1/raft/kv?group_id=${encodeURIComponent(
+        cfg.group
+      )}&key=${encodeURIComponent(key)}`;
+      const resp = await fetch(url);
+      const json = await resp.json().catch(() => null);
+      if (json?.success !== true || json.data == null) return null;
+      raw = String(json.data);
+    }
+    const obj = JSON.parse(raw);
+    return { hasFulltext: obj?.has_fulltext === "1", hasVector: obj?.has_vector === "1" };
+  } catch {
+    return null;
+  }
+}
+async function syncIndexMetaToRaft(protocol, host, port, indexName, raft) {
+  try {
+    if (!raft.host.trim() || !raft.port.trim() || !raft.group.trim()) {
+      return { ok: false, message: "Raft 服务配置不完整", count: 0 };
+    }
+    const client = getClient(protocol, host, port);
+    const docs = await client.searchMultiField(
+      indexName,
+      { has_fulltext: "1", has_vector: "1" },
+      1e5
+    );
+    const items = docs.map((d) => ({
+      blake3: d.fields?.blake3 || "",
+      has_fulltext: d.fields?.has_fulltext === "1" ? "1" : "0",
+      has_vector: d.fields?.has_vector === "1" ? "1" : "0"
+    })).filter((it) => it.blake3);
+    const isGrpc = raft.protocol === "grpc";
+    let restUrl = "";
+    if (!isGrpc) {
+      let base = raft.host.trim().replace(/\/+$/, "");
+      if (!/^https?:\/\//i.test(base)) base = "http://" + base;
+      restUrl = `${base}:${raft.port.trim()}/api/v1/raft/kv`;
+    }
+    const groupId = raft.group.trim();
+    const putOne = async (it) => {
+      const key = "INDEX\0" + it.blake3;
+      const value = JSON.stringify(it);
+      if (isGrpc) return raftPutGrpc(raft, key, value);
+      try {
+        const res = await fetch(restUrl, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ group_id: groupId, key, value })
+        });
+        const json = await res.json().catch(() => null);
+        return json?.success === true;
+      } catch {
+        return false;
+      }
+    };
+    let count = 0;
+    const CONCURRENCY = 8;
+    for (let i = 0; i < items.length; i += CONCURRENCY) {
+      const batch = items.slice(i, i + CONCURRENCY);
+      const results = await Promise.all(batch.map((it) => putOne(it)));
+      count += results.filter(Boolean).length;
+    }
+    return { ok: true, message: "", count };
+  } catch (e) {
+    return { ok: false, message: e.message || "同步索引状态到 Raft 失败", count: 0 };
+  }
+}
 function registerIndexSearchHandlers() {
   electron.ipcMain.handle("app:hostname", () => os.hostname());
   electron.ipcMain.handle(
     "index:ensure",
-    async (_e, protocol, host, port, indexName) => {
-      return ensureIndex(protocol, host, port, indexName);
+    async (_e, protocol, host, port, indexName, allowRebuild) => {
+      return ensureIndex(protocol, host, port, indexName, !!allowRebuild);
     }
   );
   electron.ipcMain.handle(
@@ -874,10 +1070,11 @@ function registerIndexSearchHandlers() {
   );
   electron.ipcMain.handle(
     "index:checkFiles",
-    async (_e, protocol, host, port, indexName, paths) => {
+    async (_e, protocol, host, port, indexName, paths, raft) => {
       const results = {};
       const CONCURRENCY = 4;
       const work = paths.filter(Boolean);
+      const useRaft = !!raft?.enabled;
       let cursor = 0;
       const worker = async () => {
         while (cursor < work.length) {
@@ -885,14 +1082,22 @@ function registerIndexSearchHandlers() {
           try {
             const content = fs.readFileSync(p, "utf8");
             if (!content.trim()) {
-              results[p] = false;
+              results[p] = { hasFulltext: false, hasVector: false };
               continue;
             }
             const digest = await computeBlake3(content);
+            if (useRaft) {
+              const st = await raftGetIndexMeta(raft, digest);
+              results[p] = { hasFulltext: !!st?.hasFulltext, hasVector: !!st?.hasVector };
+              continue;
+            }
             const hit = await queryByDigest(protocol, host, port, indexName, digest);
-            results[p] = !!hit;
+            results[p] = {
+              hasFulltext: !!hit && hit.fields.has_fulltext === "1",
+              hasVector: !!hit && hit.fields.has_vector === "1"
+            };
           } catch {
-            results[p] = false;
+            results[p] = { hasFulltext: false, hasVector: false };
           }
         }
       };
@@ -904,10 +1109,11 @@ function registerIndexSearchHandlers() {
   );
   electron.ipcMain.handle(
     "index:checkS3Files",
-    async (_e, protocol, host, port, indexName, config, bucket, keys) => {
+    async (_e, protocol, host, port, indexName, config, bucket, keys, raft) => {
       const results = {};
       const CONCURRENCY = 4;
       const work = keys.filter(Boolean);
+      const useRaft = !!raft?.enabled;
       let cursor = 0;
       const worker = async () => {
         while (cursor < work.length) {
@@ -915,14 +1121,22 @@ function registerIndexSearchHandlers() {
           try {
             const content = await fetchS3Content(config, bucket, key);
             if (!content.trim()) {
-              results[key] = false;
+              results[key] = { hasFulltext: false, hasVector: false };
               continue;
             }
             const digest = await computeBlake3(content);
+            if (useRaft) {
+              const st = await raftGetIndexMeta(raft, digest);
+              results[key] = { hasFulltext: !!st?.hasFulltext, hasVector: !!st?.hasVector };
+              continue;
+            }
             const hit = await queryByDigest(protocol, host, port, indexName, digest);
-            results[key] = !!hit;
+            results[key] = {
+              hasFulltext: !!hit && hit.fields.has_fulltext === "1",
+              hasVector: !!hit && hit.fields.has_vector === "1"
+            };
           } catch {
-            results[key] = false;
+            results[key] = { hasFulltext: false, hasVector: false };
           }
         }
       };
@@ -961,18 +1175,39 @@ function registerIndexSearchHandlers() {
           return { ok: false, message: `无效的文档 ID：${docId || "（空）"}` };
         }
         const client = getClient(protocol, host, port);
-        await client.deleteDocument(indexName, docId);
+        let oldEntry = null;
         const digest = fields?.blake3;
+        if (digest) {
+          try {
+            oldEntry = await queryByDigest(protocol, host, port, indexName, digest);
+          } catch {
+            oldEntry = null;
+          }
+        }
+        await client.deleteDocument(indexName, docId);
         if (digest) {
           const remaining = await client.searchMultiField(indexName, { blake3: digest }, 20);
           if (remaining.some((r) => r.docId === docId && r.fields.blake3 === digest)) {
             return { ok: false, message: "删除未生效：服务端仍存在该条目（doc_id 不匹配？）" };
           }
         }
+        if (oldEntry && oldEntry.fields.has_vector === "1") {
+          const merged = { ...oldEntry.fields };
+          merged.has_fulltext = "0";
+          merged.content = "";
+          await client.addDocument(indexName, "", merged);
+          return { ok: true, message: "已删除全文索引（保留向量索引条目）" };
+        }
         return { ok: true, message: "已删除索引文档" };
       } catch (e) {
         return { ok: false, message: e.message || "删除索引文档失败" };
       }
+    }
+  );
+  electron.ipcMain.handle(
+    "index:syncRaft",
+    async (_e, protocol, host, port, indexName, raft) => {
+      return syncIndexMetaToRaft(protocol, host, port, indexName, raft);
     }
   );
 }
@@ -1373,41 +1608,6 @@ function getVectorClient(host, port) {
   }
   return client;
 }
-let mapping = null;
-function mappingPath() {
-  return path.join(electron.app.getPath("userData"), "laoflchmd.vector.json");
-}
-function getMapping() {
-  if (!mapping) {
-    try {
-      const raw = fs.readFileSync(mappingPath(), "utf8");
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object" && parsed.files && parsed.entries) {
-        mapping = parsed;
-      } else {
-        mapping = { version: 1, files: {}, entries: {} };
-      }
-    } catch {
-      mapping = { version: 1, files: {}, entries: {} };
-    }
-  }
-  return mapping;
-}
-function saveMapping() {
-  try {
-    const dir = electron.app.getPath("userData");
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(mappingPath(), JSON.stringify(getMapping()), "utf8");
-  } catch {
-  }
-}
-function fileKeyOf(kind, path2, config, bucket, key) {
-  if (kind === "s3") {
-    const server = (config?.endpoint || "s3.amazonaws.com").replace(/^https?:\/\//i, "").replace(/\/+$/, "");
-    return `s3:${server}/${bucket || ""}/${key || ""}`;
-  }
-  return `local:${path2}`;
-}
 function splitChunks(text, chunkSize, overlap) {
   const clean = text.replace(/\r\n/g, "\n");
   if (clean.length <= chunkSize) {
@@ -1452,35 +1652,80 @@ async function createEmbeddingsBatched(client, modelName, texts, dim) {
   }
   return results;
 }
-async function deleteVectorFile(client, indexName, fileKey) {
-  const m = getMapping();
-  const rec = m.files[fileKey];
-  if (!rec) return;
-  for (const id of rec.ids) {
+async function deleteChunksOfDigest(searchCfg, client, indexName, digest) {
+  let old = null;
+  try {
+    old = await queryByDigest(searchCfg.protocol, searchCfg.host, searchCfg.port, searchCfg.indexName, digest);
+  } catch {
+    return;
+  }
+  if (!old) return;
+  let chunks = [];
+  try {
+    chunks = JSON.parse(old.fields.chunks || "[]");
+  } catch {
+    return;
+  }
+  for (const c of chunks) {
     try {
-      await client.deleteEmbedding(id, indexName);
+      await client.deleteEmbedding(Number(c.id), indexName);
     } catch {
     }
   }
-  delete m.files[fileKey];
-  for (const id of rec.ids) delete m.entries[String(id)];
-  saveMapping();
 }
-async function deleteVectorId(client, indexName, id) {
-  const m = getMapping();
+async function deleteVectorFile(searchCfg, client, indexName, kind, path2, config, bucket, key) {
+  const content = kind === "s3" ? await fetchS3Content(config, bucket, key) : fs.readFileSync(path2, "utf8");
+  const digest = await computeBlake3(content);
+  const old = await queryByDigest(searchCfg.protocol, searchCfg.host, searchCfg.port, searchCfg.indexName, digest);
+  if (!old) return;
+  let chunks = [];
   try {
-    await client.deleteEmbedding(id, indexName);
+    chunks = JSON.parse(old.fields.chunks || "[]");
   } catch {
+    chunks = [];
   }
-  delete m.entries[String(id)];
-  for (const fk of Object.keys(m.files)) {
-    const rec = m.files[fk];
-    if (rec.ids.includes(id)) {
-      rec.ids = rec.ids.filter((x) => x !== id);
-      if (!rec.ids.length) delete m.files[fk];
+  for (const c of chunks) {
+    try {
+      await client.deleteEmbedding(Number(c.id), indexName);
+    } catch {
     }
   }
-  saveMapping();
+  const searchClient = getClient(searchCfg.protocol, searchCfg.host, searchCfg.port);
+  if (old.fields.has_fulltext === "1") {
+    const merged = { ...old.fields };
+    merged.has_vector = "0";
+    merged.chunks = "[]";
+    await searchClient.deleteDocument(searchCfg.indexName, old.docId);
+    await searchClient.addDocument(searchCfg.indexName, "", merged);
+  } else {
+    await searchClient.deleteDocument(searchCfg.indexName, old.docId);
+  }
+}
+async function deleteVectorId(searchCfg, client, indexName, id) {
+  await client.deleteEmbedding(id, indexName);
+  const searchClient = getClient(searchCfg.protocol, searchCfg.host, searchCfg.port);
+  const entries = await searchClient.searchMultiField(searchCfg.indexName, { has_vector: "1" }, 1e4);
+  for (const e of entries) {
+    let chunks = [];
+    try {
+      chunks = JSON.parse(e.fields.chunks || "[]");
+    } catch {
+      continue;
+    }
+    const idx = chunks.findIndex((c) => Number(c.id) === id);
+    if (idx < 0) continue;
+    chunks.splice(idx, 1);
+    const merged = { ...e.fields };
+    merged.chunks = JSON.stringify(chunks);
+    merged.has_vector = chunks.length ? "1" : "0";
+    if (!chunks.length && e.fields.has_fulltext !== "1") {
+      await searchClient.deleteDocument(searchCfg.indexName, e.docId);
+    } else {
+      await searchClient.deleteDocument(searchCfg.indexName, e.docId);
+      await searchClient.addDocument(searchCfg.indexName, "", merged);
+    }
+    break;
+  }
 }
 function collectMarkdownFiles(dirPath) {
   const results = [];
@@ -1508,19 +1753,37 @@ function collectMarkdownFiles(dirPath) {
   walk(dirPath);
   return results;
 }
-function entryBaseOf(kind, title, path2, blake3, server, bucket, key) {
-  return {
-    title,
-    path: path2,
-    kind,
-    host: kind === "local" ? os.hostname() : server,
-    server,
-    bucket,
-    key,
-    blake3
-  };
+async function syncEntryAfterVector(searchCfg, meta) {
+  let oldHasFulltext = "0";
+  let oldContent = "";
+  try {
+    const old = await queryByDigest(searchCfg.protocol, searchCfg.host, searchCfg.port, searchCfg.indexName, meta.blake3);
+    if (old) {
+      oldHasFulltext = old.fields.has_fulltext === "1" ? "1" : "0";
+      oldContent = oldHasFulltext === "1" ? old.fields.content || "" : "";
+    }
+  } catch {
+  }
+  const fields = buildFields({
+    docId: meta.docId,
+    title: meta.title,
+    content: oldContent,
+    path: meta.path,
+    kind: meta.kind,
+    host: meta.host,
+    server: meta.server,
+    bucket: meta.bucket,
+    key: meta.key,
+    updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    blake3: meta.blake3,
+    hasFulltext: oldHasFulltext,
+    hasVector: "1",
+    chunks: JSON.stringify(meta.chunkRecords)
+  });
+  const client = getClient(searchCfg.protocol, searchCfg.host, searchCfg.port);
+  await upsertDocument(client, searchCfg.indexName, fields);
 }
-async function indexVectorLocalFile(host, port, indexName, modelName, filePath, chunkSize, overlap) {
+async function indexVectorLocalFile(searchCfg, host, port, indexName, modelName, filePath, chunkSize, overlap) {
   try {
     const content = fs.readFileSync(filePath, "utf8");
     if (!content.trim()) {
@@ -1532,14 +1795,13 @@ async function indexVectorLocalFile(host, port, indexName, modelName, filePath, 
       return { ok: true, message: `跳过空文件：${path.basename(filePath)}`, count: 0 };
     }
     const client = getVectorClient(host, port);
+    await deleteChunksOfDigest(searchCfg, client, indexName, digest);
     const embeddings = await createEmbeddingsBatched(client, modelName, chunks, DEFAULT_VECTOR_DIM);
-    const fileKey = fileKeyOf("local", filePath);
-    await deleteVectorFile(client, indexName, fileKey);
     const title = path.basename(filePath, path.extname(filePath)) || path.basename(filePath);
-    const ids = [];
+    const chunkRecords = [];
     for (let i = 0; i < chunks.length; i++) {
       const id = await chunkId(digest, i);
-      ids.push(id);
+      chunkRecords.push({ id, idx: i, total: chunks.length, snippet: chunks[i].slice(0, 300) });
       await client.insertEmbedding(id, indexName, embeddings[i], {
         title,
         path: filePath,
@@ -1554,31 +1816,31 @@ async function indexVectorLocalFile(host, port, indexName, modelName, filePath, 
         snippet: chunks[i].slice(0, 300)
       });
     }
-    const m = getMapping();
-    m.files[fileKey] = { blake3: digest, ids };
-    const base = entryBaseOf("local", title, filePath, digest, "", "", "");
-    for (let i = 0; i < chunks.length; i++) {
-      m.entries[String(ids[i])] = {
-        ...base,
-        chunkIndex: i,
-        totalChunks: chunks.length,
-        snippet: chunks[i].slice(0, 300)
-      };
-    }
-    saveMapping();
+    await syncEntryAfterVector(searchCfg, {
+      docId: localDocId(filePath),
+      title,
+      path: filePath,
+      kind: "local",
+      host: os.hostname(),
+      server: "",
+      bucket: "",
+      key: "",
+      blake3: digest,
+      chunkRecords
+    });
     return { ok: true, message: `已生成向量索引：${path.basename(filePath)}（${chunks.length} 块）`, count: chunks.length };
   } catch (e) {
     return { ok: false, message: `向量索引 ${path.basename(filePath)} 失败：${e.message || e}`, count: 0 };
   }
 }
-async function indexVectorDir(host, port, indexName, modelName, dirPath, chunkSize, overlap, onProgress) {
+async function indexVectorDir(searchCfg, host, port, indexName, modelName, dirPath, chunkSize, overlap, onProgress) {
   const files = collectMarkdownFiles(dirPath);
   let okCount = 0;
   let firstErr = null;
   for (let i = 0; i < files.length; i++) {
     const filePath = files[i];
     onProgress?.(i + 1, files.length, path.basename(filePath));
-    const res = await indexVectorLocalFile(host, port, indexName, modelName, filePath, chunkSize, overlap);
+    const res = await indexVectorLocalFile(searchCfg, host, port, indexName, modelName, filePath, chunkSize, overlap);
     if (res.ok) okCount++;
     else if (!firstErr) firstErr = res.message;
   }
@@ -1587,7 +1849,7 @@ async function indexVectorDir(host, port, indexName, modelName, dirPath, chunkSi
   }
   return { ok: true, message: `已为 ${okCount} 个 Markdown 文件生成向量索引`, count: okCount };
 }
-async function indexVectorS3File(host, port, indexName, modelName, config, bucket, key, chunkSize, overlap) {
+async function indexVectorS3File(searchCfg, host, port, indexName, modelName, config, bucket, key, chunkSize, overlap) {
   try {
     const content = await fetchS3Content(config, bucket, key);
     if (!content.trim()) {
@@ -1599,15 +1861,14 @@ async function indexVectorS3File(host, port, indexName, modelName, config, bucke
       return { ok: true, message: `跳过空文件：${path.basename(key)}`, count: 0 };
     }
     const client = getVectorClient(host, port);
+    await deleteChunksOfDigest(searchCfg, client, indexName, digest);
     const embeddings = await createEmbeddingsBatched(client, modelName, chunks, DEFAULT_VECTOR_DIM);
     const server = (config.endpoint || "s3.amazonaws.com").replace(/\/+$/, "");
-    const fileKey = fileKeyOf("s3", key, config, bucket, key);
-    await deleteVectorFile(client, indexName, fileKey);
     const title = path.basename(key, path.extname(key)) || path.basename(key);
-    const ids = [];
+    const chunkRecords = [];
     for (let i = 0; i < chunks.length; i++) {
       const id = await chunkId(digest, i);
-      ids.push(id);
+      chunkRecords.push({ id, idx: i, total: chunks.length, snippet: chunks[i].slice(0, 300) });
       await client.insertEmbedding(id, indexName, embeddings[i], {
         title,
         path: key,
@@ -1622,48 +1883,62 @@ async function indexVectorS3File(host, port, indexName, modelName, config, bucke
         snippet: chunks[i].slice(0, 300)
       });
     }
-    const m = getMapping();
-    m.files[fileKey] = { blake3: digest, ids };
-    const base = entryBaseOf("s3", title, key, digest, server, bucket, key);
-    for (let i = 0; i < chunks.length; i++) {
-      m.entries[String(ids[i])] = {
-        ...base,
-        chunkIndex: i,
-        totalChunks: chunks.length,
-        snippet: chunks[i].slice(0, 300)
-      };
-    }
-    saveMapping();
+    await syncEntryAfterVector(searchCfg, {
+      docId: s3DocId(config, bucket, key),
+      title,
+      path: key,
+      kind: "s3",
+      host: server,
+      server,
+      bucket,
+      key,
+      blake3: digest,
+      chunkRecords
+    });
     return { ok: true, message: `已生成向量索引：${path.basename(key)}（${chunks.length} 块）`, count: chunks.length };
   } catch (e) {
     return { ok: false, message: `向量索引 ${path.basename(key)} 失败：${e.message || e}`, count: 0 };
   }
 }
-async function searchVector(host, port, indexName, modelName, query, topK) {
+async function searchVector(searchCfg, host, port, indexName, modelName, query, topK) {
   try {
     const client = getVectorClient(host, port);
     const qEmb = await client.createEmbedding(modelName, [query], DEFAULT_VECTOR_DIM);
     if (!qEmb.length) throw new Error("查询向量生成失败");
     const hits = await client.searchEmbedding(qEmb[0].embedding, indexName, topK);
-    const m = getMapping();
+    const searchClient = getClient(searchCfg.protocol, searchCfg.host, searchCfg.port);
+    const entries = await searchClient.searchMultiField(searchCfg.indexName, { has_vector: "1" }, 1e4);
+    const chunkMap = /* @__PURE__ */ new Map();
+    for (const e of entries) {
+      let chunks = [];
+      try {
+        chunks = JSON.parse(e.fields.chunks || "[]");
+      } catch {
+        continue;
+      }
+      for (const c of chunks) {
+        chunkMap.set(Number(c.id), { fields: e.fields, chunk: c });
+      }
+    }
     const results = hits.map((h) => {
-      const entry = m.entries[String(h.id)];
+      const rec = chunkMap.get(h.id);
       return {
         docId: String(h.id),
         // Cosine 距离 → 相似度：1 - distance（clip 下限 0）
         score: Math.max(0, 1 - h.distance),
-        fields: entry ? {
-          title: entry.title,
-          path: entry.path,
-          kind: entry.kind,
-          host: entry.host,
-          server: entry.server,
-          bucket: entry.bucket,
-          key: entry.key,
-          blake3: entry.blake3,
-          chunk_index: String(entry.chunkIndex),
-          total_chunks: String(entry.totalChunks),
-          snippet: entry.snippet
+        distance: h.distance,
+        fields: rec ? {
+          title: rec.fields.title || "",
+          path: rec.fields.path || "",
+          kind: rec.fields.kind || "local",
+          host: rec.fields.host || "",
+          server: rec.fields.server || "",
+          bucket: rec.fields.bucket || "",
+          key: rec.fields.key || "",
+          blake3: rec.fields.blake3 || "",
+          chunk_index: String(rec.chunk.idx),
+          total_chunks: String(rec.chunk.total),
+          snippet: rec.chunk.snippet || ""
         } : {}
       };
     });
@@ -1687,8 +1962,9 @@ function registerVectorIndexHandlers() {
   });
   electron.ipcMain.handle(
     "vector:indexLocal",
-    async (_e, host, port, indexName, modelName, filePath, chunkSize, overlap) => {
+    async (_e, searchCfg, host, port, indexName, modelName, filePath, chunkSize, overlap) => {
       return indexVectorLocalFile(
+        searchCfg,
         host,
         port,
         indexName,
@@ -1701,8 +1977,9 @@ function registerVectorIndexHandlers() {
   );
   electron.ipcMain.handle(
     "vector:indexDir",
-    async (e, host, port, indexName, modelName, dirPath, chunkSize, overlap) => {
+    async (e, searchCfg, host, port, indexName, modelName, dirPath, chunkSize, overlap) => {
       return indexVectorDir(
+        searchCfg,
         host,
         port,
         indexName,
@@ -1718,8 +1995,9 @@ function registerVectorIndexHandlers() {
   );
   electron.ipcMain.handle(
     "vector:indexS3",
-    async (_e, host, port, indexName, modelName, config, bucket, key, chunkSize, overlap) => {
+    async (_e, searchCfg, host, port, indexName, modelName, config, bucket, key, chunkSize, overlap) => {
       return indexVectorS3File(
+        searchCfg,
         host,
         port,
         indexName,
@@ -1734,17 +2012,16 @@ function registerVectorIndexHandlers() {
   );
   electron.ipcMain.handle(
     "vector:search",
-    async (_e, host, port, indexName, modelName, query, topK) => {
-      return searchVector(host, port, indexName, modelName, query, topK || DEFAULT_SEARCH_LIMIT);
+    async (_e, searchCfg, host, port, indexName, modelName, query, topK) => {
+      return searchVector(searchCfg, host, port, indexName, modelName, query, topK || DEFAULT_SEARCH_LIMIT);
     }
   );
   electron.ipcMain.handle(
     "vector:deleteFile",
-    async (_e, host, port, indexName, kind, path2, config, bucket, key) => {
+    async (_e, searchCfg, host, port, indexName, kind, path2, config, bucket, key) => {
       try {
         const client = getVectorClient(host, port);
-        const fileKey = fileKeyOf(kind, path2, config, bucket, key);
-        await deleteVectorFile(client, indexName, fileKey);
+        await deleteVectorFile(searchCfg, client, indexName, kind, path2, config, bucket, key);
         return { ok: true, message: "已删除该文件的向量索引" };
       } catch (e) {
         return { ok: false, message: e.message || "删除向量索引失败" };
@@ -1753,37 +2030,18 @@ function registerVectorIndexHandlers() {
   );
   electron.ipcMain.handle(
     "vector:deleteId",
-    async (_e, host, port, indexName, id) => {
+    async (_e, searchCfg, host, port, indexName, id) => {
       try {
         const num = Number(id);
         if (!/^\d+$/.test(String(num))) {
           return { ok: false, message: `无效的向量 ID：${id}` };
         }
         const client = getVectorClient(host, port);
-        await deleteVectorId(client, indexName, num);
+        await deleteVectorId(searchCfg, client, indexName, num);
         return { ok: true, message: "已删除该向量条目" };
       } catch (e) {
         return { ok: false, message: e.message || "删除向量条目失败" };
       }
-    }
-  );
-  electron.ipcMain.handle("vector:checkFiles", async (_e, paths) => {
-    const m = getMapping();
-    const results = {};
-    for (const p of paths.filter(Boolean)) {
-      results[p] = !!m.files[`local:${p}`];
-    }
-    return { ok: true, message: "", results };
-  });
-  electron.ipcMain.handle(
-    "vector:checkS3Files",
-    async (_e, config, bucket, keys) => {
-      const m = getMapping();
-      const results = {};
-      for (const key of keys.filter(Boolean)) {
-        results[key] = !!m.files[fileKeyOf("s3", key, config, bucket, key)];
-      }
-      return { ok: true, message: "", results };
     }
   );
 }

@@ -302,9 +302,9 @@ defineExpose({ startRename })
   background: rgba(255, 255, 255, 0.25);
 }
 
-/* 向量索引标签：蓝色背景区分全文（绿色） */
+/* 向量索引标签：紫色背景区分全文（绿色） */
 .indexed-tag.vector {
-  background: #409eff;
+  background: #8209c9;
 }
 
 .rename-input {

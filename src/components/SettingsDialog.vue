@@ -26,6 +26,15 @@ const draftVectorIndexName = ref('')
 const draftVectorModelName = ref('')
 const draftVectorChunkSize = ref(800)
 const draftVectorChunkOverlap = ref(100)
+const draftRebuildOnSchemaChange = ref(false)
+const draftSearchTopK = ref(30)
+const draftSearchMaxDistance = ref(0.4)
+const draftRaftHost = ref('')
+const draftRaftProtocol = ref<IndexProtocol>('grpc')
+const draftRaftGrpcPort = ref('')
+const draftRaftRestPort = ref('')
+const draftRaftGroup = ref('')
+const draftRaftSyncEnabled = ref(false)
 const errorMsg = ref('')
 
 // 打开时载入当前设置
@@ -46,6 +55,15 @@ watch(
       draftVectorModelName.value = settings.vectorModelName
       draftVectorChunkSize.value = settings.vectorChunkSize
       draftVectorChunkOverlap.value = settings.vectorChunkOverlap
+      draftRebuildOnSchemaChange.value = settings.indexRebuildOnSchemaChange
+      draftSearchTopK.value = settings.vectorSearchTopK
+      draftSearchMaxDistance.value = settings.vectorSearchMaxDistance
+      draftRaftHost.value = settings.raftHost
+      draftRaftProtocol.value = settings.raftProtocol
+      draftRaftGrpcPort.value = settings.raftGrpcPort
+      draftRaftRestPort.value = settings.raftRestPort
+      draftRaftGroup.value = settings.raftGroup
+      draftRaftSyncEnabled.value = settings.raftSyncEnabled
       errorMsg.value = ''
     }
   }
@@ -97,6 +115,29 @@ function save() {
     errorMsg.value = '重叠长度需为 0 到分块长度之间的整数'
     return
   }
+  if (!Number.isInteger(draftSearchTopK.value) || draftSearchTopK.value < 1 || draftSearchTopK.value > 1000) {
+    errorMsg.value = '向量检索 TopK 需为 1-1000 的整数'
+    return
+  }
+  if (!Number.isFinite(draftSearchMaxDistance.value) || draftSearchMaxDistance.value < 0) {
+    errorMsg.value = '向量检索距离上限需为不小于 0 的数值（0 表示不筛选）'
+    return
+  }
+  if (draftRaftSyncEnabled.value) {
+    if (!draftRaftHost.value.trim()) {
+      errorMsg.value = 'Raft 服务地址不能为空'
+      return
+    }
+    const raftPort = draftRaftProtocol.value === 'grpc' ? draftRaftGrpcPort : draftRaftRestPort
+    if (!isPortValid(raftPort.value.trim())) {
+      errorMsg.value = `Raft ${draftRaftProtocol.value === 'grpc' ? 'gRPC' : 'REST'} 端口无效（1-65535）`
+      return
+    }
+    if (!draftRaftGroup.value.trim()) {
+      errorMsg.value = 'Raft 组名不能为空'
+      return
+    }
+  }
 
   settings.indexProtocol = draftProtocol.value
   settings.grpcHost = draftGrpcHost.value.trim()
@@ -111,6 +152,15 @@ function save() {
   settings.vectorModelName = draftVectorModelName.value.trim()
   settings.vectorChunkSize = draftVectorChunkSize.value
   settings.vectorChunkOverlap = draftVectorChunkOverlap.value
+  settings.indexRebuildOnSchemaChange = draftRebuildOnSchemaChange.value
+  settings.vectorSearchTopK = draftSearchTopK.value
+  settings.vectorSearchMaxDistance = draftSearchMaxDistance.value
+  settings.raftHost = draftRaftHost.value.trim()
+  settings.raftProtocol = draftRaftProtocol.value
+  settings.raftGrpcPort = draftRaftGrpcPort.value.trim()
+  settings.raftRestPort = draftRaftRestPort.value.trim()
+  settings.raftGroup = draftRaftGroup.value.trim()
+  settings.raftSyncEnabled = draftRaftSyncEnabled.value
   emit('close')
 }
 
@@ -228,6 +278,23 @@ function cancel() {
         </div>
         <p class="field-hint">全文检索使用的索引表名，默认 md_docs</p>
 
+        <div class="settings-field" :class="{ dimmed: !draftIndexEnabled || !draftFulltextEnabled }">
+          <div class="field-row">
+            <div class="field-label">索引结构变更时重建</div>
+            <label class="switch" :class="{ on: draftRebuildOnSchemaChange }">
+              <input
+                v-model="draftRebuildOnSchemaChange"
+                type="checkbox"
+                :disabled="!draftIndexEnabled || !draftFulltextEnabled"
+              />
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+          <p class="field-hint">
+            开启后，当索引需要的字段有新增时会清空并重建索引（已有索引数据会丢失，需重新生成）；关闭时不做任何变更
+          </p>
+        </div>
+
         <div class="settings-section-title">向量文本索引服务（laoflchdb-rust, gRPC）</div>
 
         <div class="settings-field inline-field" :class="{ dimmed: !draftIndexEnabled || !draftVectorTextEnabled }">
@@ -272,6 +339,96 @@ function cancel() {
           />
         </div>
         <p class="field-hint">相邻分块之间的重叠字符数，保留跨块语义，默认 100</p>
+
+        <div class="settings-section-title">向量检索</div>
+
+        <div class="settings-field inline-field" :class="{ dimmed: !draftIndexEnabled || !draftVectorTextEnabled }">
+          <div class="field-label">TopK</div>
+          <input
+            v-model.number="draftSearchTopK"
+            class="settings-input num-input"
+            type="number"
+            min="1"
+            max="1000"
+          />
+        </div>
+        <p class="field-hint">每次向量检索返回的结果条数上限，默认 30</p>
+
+        <div class="settings-field inline-field" :class="{ dimmed: !draftIndexEnabled || !draftVectorTextEnabled }">
+          <div class="field-label">距离上限</div>
+          <input
+            v-model.number="draftSearchMaxDistance"
+            class="settings-input num-input"
+            type="number"
+            min="0"
+            step="0.01"
+          />
+        </div>
+        <p class="field-hint">只保留距离小于该值的结果（距离越小越相关），0 表示不筛选</p>
+
+        <div class="settings-section-title">Raft 状态同步（laoflchdb-rust）</div>
+
+        <div class="settings-field">
+          <div class="field-row">
+            <div class="field-label">同步索引状态</div>
+            <label class="switch" :class="{ on: draftRaftSyncEnabled }">
+              <input v-model="draftRaftSyncEnabled" type="checkbox" />
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+          <p class="field-hint">
+            开启后启动时把索引条目的 blake3 / 全文索引 / 向量索引状态写入 Raft，索引状态标签改为从 Raft 读取；关闭时仍查询 md_docs 索引条目
+          </p>
+        </div>
+
+        <div class="settings-field" :class="{ dimmed: !draftIndexEnabled || !draftRaftSyncEnabled }">
+          <div class="field-label">连接协议</div>
+          <div class="radio-group">
+            <label class="radio-option" :class="{ active: draftRaftProtocol === 'grpc' }">
+              <input v-model="draftRaftProtocol" type="radio" value="grpc" />
+              <span>gRPC</span>
+            </label>
+            <label class="radio-option" :class="{ active: draftRaftProtocol === 'rest' }">
+              <input v-model="draftRaftProtocol" type="radio" value="rest" />
+              <span>REST</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="settings-field inline-field" :class="{ dimmed: !draftIndexEnabled || !draftRaftSyncEnabled }">
+          <div class="field-label">服务地址</div>
+          <input v-model="draftRaftHost" class="settings-input" type="text" placeholder="127.0.0.1" />
+        </div>
+        <div class="settings-field inline-field" :class="{ dimmed: !draftIndexEnabled || !draftRaftSyncEnabled }">
+          <div class="field-label">gRPC 端口</div>
+          <input
+            v-model="draftRaftGrpcPort"
+            class="settings-input num-input"
+            type="text"
+            placeholder="29999"
+            :disabled="draftRaftProtocol !== 'grpc'"
+          />
+        </div>
+        <div
+          class="settings-field inline-field"
+          :class="{ dimmed: !draftIndexEnabled || !draftRaftSyncEnabled || draftRaftProtocol !== 'rest' }"
+        >
+          <div class="field-label">REST 端口</div>
+          <input
+            v-model="draftRaftRestPort"
+            class="settings-input num-input"
+            type="text"
+            placeholder="18080"
+            :disabled="draftRaftProtocol !== 'rest'"
+          />
+        </div>
+        <div class="settings-field inline-field" :class="{ dimmed: !draftIndexEnabled || !draftRaftSyncEnabled }">
+          <div class="field-label">组名</div>
+          <input v-model="draftRaftGroup" class="settings-input" type="text" placeholder="group-laoflchMD-etc" />
+        </div>
+        <p class="field-hint">
+          key 为 INDEX + 空字符 + blake3，value 为含 blake3 / has_fulltext / has_vector 的 JSON
+        </p>
 
         <p v-if="errorMsg" class="settings-error">{{ errorMsg }}</p>
       </div>

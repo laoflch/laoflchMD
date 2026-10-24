@@ -13,6 +13,10 @@ export const DEFAULT_REST_PORT = '38080'
 export const DEFAULT_INDEX_NAME = 'md_docs'
 export const DEFAULT_VECTOR_INDEX_NAME = 'text_md'
 export const DEFAULT_VECTOR_MODEL_NAME = 'bge-m3'
+export const DEFAULT_RAFT_HOST = '127.0.0.1'
+export const DEFAULT_RAFT_GRPC_PORT = '29999'
+export const DEFAULT_RAFT_REST_PORT = '18080'
+export const DEFAULT_RAFT_GROUP = 'group-laoflchMD-etc'
 
 interface PersistedSettings {
   indexEnabled: boolean
@@ -23,11 +27,20 @@ interface PersistedSettings {
   restHost: string
   restPort: string
   indexName: string
+  indexRebuildOnSchemaChange: boolean
   vectorTextEnabled: boolean
   vectorIndexName: string
   vectorModelName: string
   vectorChunkSize: number
   vectorChunkOverlap: number
+  vectorSearchTopK: number
+  vectorSearchMaxDistance: number
+  raftHost: string
+  raftProtocol: IndexProtocol
+  raftGrpcPort: string
+  raftRestPort: string
+  raftGroup: string
+  raftSyncEnabled: boolean
 }
 
 /**
@@ -48,10 +61,24 @@ export const useSettingsStore = defineStore('settings', () => {
   const restHost = ref(DEFAULT_REST_HOST)
   const restPort = ref(DEFAULT_REST_PORT)
   const indexName = ref(DEFAULT_INDEX_NAME)
+  // 索引结构（字段）变更时是否允许清空重建：默认关闭，避免误清空已有索引数据
+  const indexRebuildOnSchemaChange = ref(false)
   const vectorIndexName = ref(DEFAULT_VECTOR_INDEX_NAME)
   const vectorModelName = ref(DEFAULT_VECTOR_MODEL_NAME)
   const vectorChunkSize = ref(800)
   const vectorChunkOverlap = ref(100)
+  // 向量检索：返回结果条数上限
+  const vectorSearchTopK = ref(30)
+  // 向量检索：距离上限（只保留 distance < 该值的结果），0 表示不筛选
+  const vectorSearchMaxDistance = ref(0.4)
+  // Raft KV：启动时同步索引状态（blake3/has_fulltext/has_vector）的目标服务
+  const raftProtocol = ref<IndexProtocol>('grpc')
+  const raftHost = ref(DEFAULT_RAFT_HOST)
+  const raftGrpcPort = ref(DEFAULT_RAFT_GRPC_PORT)
+  const raftRestPort = ref(DEFAULT_RAFT_REST_PORT)
+  const raftGroup = ref(DEFAULT_RAFT_GROUP)
+  // 是否把索引状态同步到 Raft：开启后启动时同步，且索引状态改为从 Raft 读取
+  const raftSyncEnabled = ref(false)
 
   // 初始化：从 localStorage 读取
   if (typeof localStorage !== 'undefined') {
@@ -70,10 +97,25 @@ export const useSettingsStore = defineStore('settings', () => {
         if (saved.restHost) restHost.value = saved.restHost
         if (saved.restPort) restPort.value = saved.restPort
         if (saved.indexName) indexName.value = saved.indexName
+        if (typeof saved.indexRebuildOnSchemaChange === 'boolean') {
+          indexRebuildOnSchemaChange.value = saved.indexRebuildOnSchemaChange
+        }
         if (saved.vectorIndexName) vectorIndexName.value = saved.vectorIndexName
         if (saved.vectorModelName) vectorModelName.value = saved.vectorModelName
         if (typeof saved.vectorChunkSize === 'number') vectorChunkSize.value = saved.vectorChunkSize
         if (typeof saved.vectorChunkOverlap === 'number') vectorChunkOverlap.value = saved.vectorChunkOverlap
+        if (typeof saved.vectorSearchTopK === 'number') vectorSearchTopK.value = saved.vectorSearchTopK
+        if (typeof saved.vectorSearchMaxDistance === 'number') {
+          vectorSearchMaxDistance.value = saved.vectorSearchMaxDistance
+        }
+        if (saved.raftHost) raftHost.value = saved.raftHost
+        if (saved.raftProtocol === 'grpc' || saved.raftProtocol === 'rest') {
+          raftProtocol.value = saved.raftProtocol
+        }
+        if (saved.raftGrpcPort) raftGrpcPort.value = saved.raftGrpcPort
+        if (saved.raftRestPort) raftRestPort.value = saved.raftRestPort
+        if (saved.raftGroup) raftGroup.value = saved.raftGroup
+        if (typeof saved.raftSyncEnabled === 'boolean') raftSyncEnabled.value = saved.raftSyncEnabled
       }
     } catch {
       // 忽略损坏的设置数据，使用默认值
@@ -92,10 +134,19 @@ export const useSettingsStore = defineStore('settings', () => {
       restHost,
       restPort,
       indexName,
+      indexRebuildOnSchemaChange,
       vectorIndexName,
       vectorModelName,
       vectorChunkSize,
-      vectorChunkOverlap
+      vectorChunkOverlap,
+      vectorSearchTopK,
+      vectorSearchMaxDistance,
+      raftHost,
+      raftProtocol,
+      raftGrpcPort,
+      raftRestPort,
+      raftGroup,
+      raftSyncEnabled
     ],
     () => {
       const data: PersistedSettings = {
@@ -108,10 +159,19 @@ export const useSettingsStore = defineStore('settings', () => {
         restHost: restHost.value,
         restPort: restPort.value,
         indexName: indexName.value,
+        indexRebuildOnSchemaChange: indexRebuildOnSchemaChange.value,
         vectorIndexName: vectorIndexName.value,
         vectorModelName: vectorModelName.value,
         vectorChunkSize: vectorChunkSize.value,
-        vectorChunkOverlap: vectorChunkOverlap.value
+        vectorChunkOverlap: vectorChunkOverlap.value,
+        vectorSearchTopK: vectorSearchTopK.value,
+        vectorSearchMaxDistance: vectorSearchMaxDistance.value,
+        raftHost: raftHost.value,
+        raftProtocol: raftProtocol.value,
+        raftGrpcPort: raftGrpcPort.value,
+        raftRestPort: raftRestPort.value,
+        raftGroup: raftGroup.value,
+        raftSyncEnabled: raftSyncEnabled.value
       }
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(data))
     }
@@ -127,9 +187,18 @@ export const useSettingsStore = defineStore('settings', () => {
     restHost,
     restPort,
     indexName,
+    indexRebuildOnSchemaChange,
     vectorIndexName,
     vectorModelName,
     vectorChunkSize,
-    vectorChunkOverlap
+    vectorChunkOverlap,
+    vectorSearchTopK,
+    vectorSearchMaxDistance,
+    raftHost,
+    raftProtocol,
+    raftGrpcPort,
+    raftRestPort,
+    raftGroup,
+    raftSyncEnabled
   }
 })
