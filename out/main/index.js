@@ -927,7 +927,18 @@ function s3DocId(config, bucket, key) {
   if (!/^https?:\/\//i.test(endpoint)) endpoint = "http://" + endpoint;
   return `${endpoint}/${bucket}/${key}`;
 }
-async function ensureIndex(protocol, host, port, indexName, allowRebuild) {
+async function resetFulltextState(raft) {
+  try {
+    const entries = await raftScanMetas(raft);
+    for (const e of entries) {
+      if (e.meta.has_fulltext === "1" || e.meta.row_id) {
+        await raftPutMeta(raft, e.blake3, { ...e.meta, has_fulltext: "0", row_id: "" });
+      }
+    }
+  } catch {
+  }
+}
+async function ensureIndex(protocol, host, port, indexName, raft) {
   try {
     const client = getClient(protocol, host, port);
     const indices = await client.listIndices();
@@ -949,16 +960,14 @@ async function ensureIndex(protocol, host, port, indexName, allowRebuild) {
       if (hasAll) {
         return { ok: true, message: `索引 ${indexName} 已存在`, created: false };
       }
-      if (!allowRebuild) {
-        return {
-          ok: false,
-          message: `索引 ${indexName} 字段结构已变更（v${INDEX_SCHEMA_VERSION}），需要在全局设置中开启「索引结构变更时重建」后才能清空重建`,
-          created: false
-        };
-      }
       await client.dropIndex(indexName);
       await client.createIndex(indexName, INDEX_FIELDS);
-      return { ok: true, message: `索引 ${indexName} schema 已升级（v${INDEX_SCHEMA_VERSION}）并重建`, created: true };
+      await resetFulltextState(raft);
+      return {
+        ok: true,
+        message: `索引 ${indexName} 字段结构已升级（v${INDEX_SCHEMA_VERSION}）并清空重建，请重新生成全文索引`,
+        created: true
+      };
     }
     await client.createIndex(indexName, INDEX_FIELDS);
     return { ok: true, message: `已创建索引 ${indexName}（v${INDEX_SCHEMA_VERSION}）`, created: true };
@@ -1051,7 +1060,15 @@ async function indexLocalFile(protocol, host, port, indexName, filePath, raft) {
       updatedAt: mtime
     });
     const client = getClient(protocol, host, port);
-    const rowId = await upsertDocument(client, indexName, old?.row_id || "", fields);
+    let rowId = await upsertDocument(client, indexName, old?.row_id || "", fields);
+    if (!/^\d+$/.test(rowId)) {
+      try {
+        const hits = await client.searchMultiField(indexName, { doc_id: docId }, 50);
+        const hit = hits.find((h) => h.fields?.doc_id === docId && /^\d+$/.test(h.docId));
+        if (hit) rowId = hit.docId;
+      } catch {
+      }
+    }
     await raftPutMeta(raft, digest, {
       has_fulltext: "1",
       has_vector: old?.has_vector || "0",
@@ -1124,7 +1141,15 @@ async function indexS3File(protocol, host, port, indexName, config, bucket, key,
       updatedAt: (/* @__PURE__ */ new Date()).toISOString()
     });
     const client = getClient(protocol, host, port);
-    const rowId = await upsertDocument(client, indexName, old?.row_id || "", fields);
+    let rowId = await upsertDocument(client, indexName, old?.row_id || "", fields);
+    if (!/^\d+$/.test(rowId)) {
+      try {
+        const hits = await client.searchMultiField(indexName, { doc_id: docId }, 50);
+        const hit = hits.find((h) => h.fields?.doc_id === docId && /^\d+$/.test(h.docId));
+        if (hit) rowId = hit.docId;
+      } catch {
+      }
+    }
     await raftPutMeta(raft, digest, {
       has_fulltext: "1",
       has_vector: old?.has_vector || "0",
@@ -1141,8 +1166,8 @@ function registerIndexSearchHandlers() {
   electron.ipcMain.handle("app:hostname", () => os.hostname());
   electron.ipcMain.handle(
     "index:ensure",
-    async (_e, protocol, host, port, indexName, allowRebuild) => {
-      return ensureIndex(protocol, host, port, indexName, !!allowRebuild);
+    async (_e, protocol, host, port, indexName, raft) => {
+      return ensureIndex(protocol, host, port, indexName, raft);
     }
   );
   electron.ipcMain.handle(
@@ -1848,36 +1873,67 @@ async function refreshAfterSave(raft, kind, filePath, config, bucket, key, fullt
     if (!content.trim()) return { ok: true, message: "" };
     const digest = await computeBlake3(content);
     const docId = kind === "s3" ? s3DocId(config, bucket, key) : localDocId(filePath);
-    const entries = await raftScanMetas(raft);
-    const stale = entries.filter((e) => e.meta.doc_id === docId && e.blake3 !== digest);
-    if (!stale.length) return { ok: true, message: "" };
+    const current = await raftGetMeta(raft, digest);
+    const currentRowId = current && current.doc_id === docId ? current.row_id : "";
     const ftClient = fulltext ? getClient(fulltext.protocol, fulltext.host, fulltext.port) : null;
     const vecClient = vector ? getVectorClient(vector.host, vector.port) : null;
-    let wantFulltext = false;
-    let wantVector = false;
-    for (const e of stale) {
-      if (e.meta.has_fulltext === "1") {
-        wantFulltext = true;
-        if (ftClient && /^\d+$/.test(e.meta.row_id)) {
-          try {
-            await ftClient.deleteDocument(fulltext.indexName, e.meta.row_id);
-          } catch {
-          }
-        }
-      }
-      if (e.meta.has_vector === "1") {
-        wantVector = true;
-        if (vecClient) {
-          for (const id of e.meta.chunk_ids) {
+    let mdHits = [];
+    if (ftClient && fulltext) {
+      try {
+        const res = await ftClient.searchMultiField(fulltext.indexName, { doc_id: docId }, 100);
+        mdHits = res.filter((r) => r.fields?.doc_id === docId).map((r) => {
+          let chunkIds = [];
+          if (r.fields?.chunks) {
             try {
-              await vecClient.deleteEmbedding(id, vector.indexName);
+              const arr = JSON.parse(r.fields.chunks);
+              if (Array.isArray(arr)) {
+                chunkIds = arr.map((c) => Number(c?.id)).filter((id) => Number.isFinite(id));
+              }
             } catch {
             }
           }
+          return {
+            rowId: r.docId,
+            blake3: r.fields?.blake3 || "",
+            hasVector: r.fields?.has_vector === "1",
+            chunkIds
+          };
+        });
+      } catch {
+      }
+    }
+    const legacyDigests = new Set(mdHits.map((h) => h.blake3).filter(Boolean));
+    const entries = await raftScanMetas(raft);
+    const staleRaft = entries.filter(
+      (e) => e.blake3 !== digest && (e.meta.doc_id === docId || legacyDigests.has(e.blake3))
+    );
+    const staleRows = mdHits.filter((h) => h.rowId !== currentRowId).map((h) => h.rowId);
+    const brokenFulltext = !!current && current.has_fulltext === "1" && !/^\d+$/.test(current.row_id);
+    const brokenVector = !!current && current.has_vector === "1" && !current.chunk_ids.length;
+    if (!staleRaft.length && !staleRows.length && !brokenFulltext && !brokenVector) {
+      return { ok: true, message: "" };
+    }
+    const wantFulltext = staleRows.length > 0 || brokenFulltext || staleRaft.some((e) => e.meta.has_fulltext === "1");
+    const staleChunks = /* @__PURE__ */ new Set();
+    for (const e of staleRaft) for (const id of e.meta.chunk_ids) staleChunks.add(id);
+    for (const h of mdHits) if (h.rowId !== currentRowId) for (const id of h.chunkIds) staleChunks.add(id);
+    const wantVector = staleChunks.size > 0 || brokenVector || staleRaft.some((e) => e.meta.has_vector === "1");
+    for (const rowId of Array.from(new Set(staleRows))) {
+      if (!ftClient || !fulltext || !/^\d+$/.test(rowId)) continue;
+      try {
+        await ftClient.deleteDocument(fulltext.indexName, rowId);
+      } catch {
+      }
+    }
+    if (vecClient && vector) {
+      for (const id of Array.from(staleChunks)) {
+        try {
+          await vecClient.deleteEmbedding(id, vector.indexName);
+        } catch {
         }
       }
-      await raftDeleteMeta(raft, e.blake3);
     }
+    for (const e of staleRaft) await raftDeleteMeta(raft, e.blake3);
     const generated = [];
     if (wantFulltext && fulltext?.regenerate) {
       const res = kind === "s3" ? await indexS3File(

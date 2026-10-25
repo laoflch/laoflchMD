@@ -61,7 +61,7 @@ declare global {
         host: string,
         port: string,
         indexName: string,
-        allowRebuild?: boolean
+        raft: RaftConfig
       ) => Promise<{ ok: boolean; message: string; created: boolean }>
       indexSearch: (
         protocol: IndexProtocol,

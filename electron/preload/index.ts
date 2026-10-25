@@ -98,8 +98,8 @@ contextBridge.exposeInMainWorld('api', {
   getHostname: () => ipcRenderer.invoke('app:hostname'),
 
   // Full-text search (laoflchdb-rust)
-  indexEnsure: (protocol: 'grpc' | 'rest', host: string, port: string, indexName: string, allowRebuild?: boolean) =>
-    ipcRenderer.invoke('index:ensure', protocol, host, port, indexName, allowRebuild),
+  indexEnsure: (protocol: 'grpc' | 'rest', host: string, port: string, indexName: string, raft: RaftCfg) =>
+    ipcRenderer.invoke('index:ensure', protocol, host, port, indexName, raft),
   indexSearch: (
     protocol: 'grpc' | 'rest',
     host: string,

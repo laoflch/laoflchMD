@@ -318,6 +318,8 @@ function hello() {
   const viewMode = ref<ViewMode>('preview')
   const isDarkTheme = ref(false)
   const isModified = ref(false)
+  // 文件索引状态变更计数：重建/清理索引后自增，通知文件树与 S3 列表刷新索引标签
+  const indexRefreshVersion = ref(0)
 
   // Undo / Redo history
   const MAX_HISTORY = 200
@@ -538,10 +540,13 @@ function hello() {
         const name = targetPath.split(/[\\/]/).pop() || targetPath
         const toastStore = useToastStore()
         toastStore.pushToast(res.ok ? 'ok' : 'err', `${res.message}：${name}`)
+        // 索引状态已变化：通知文件树 / S3 列表重新拉取标签
+        indexRefreshVersion.value++
       }
     } catch (e) {
       const toastStore = useToastStore()
       toastStore.pushToast('err', `重建索引失败：${e instanceof Error ? e.message : e}`)
+      indexRefreshVersion.value++
     }
   }
 
@@ -607,6 +612,7 @@ function hello() {
     viewMode,
     isDarkTheme,
     isModified,
+    indexRefreshVersion,
     renderedHtml,
     fileName,
     ensureRendered,

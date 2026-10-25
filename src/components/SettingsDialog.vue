@@ -26,7 +26,6 @@ const draftVectorIndexName = ref('')
 const draftVectorModelName = ref('')
 const draftVectorChunkSize = ref(800)
 const draftVectorChunkOverlap = ref(100)
-const draftRebuildOnSchemaChange = ref(false)
 const draftSearchTopK = ref(30)
 const draftSearchMaxDistance = ref(0.4)
 const draftRaftHost = ref('')
@@ -54,7 +53,6 @@ watch(
       draftVectorModelName.value = settings.vectorModelName
       draftVectorChunkSize.value = settings.vectorChunkSize
       draftVectorChunkOverlap.value = settings.vectorChunkOverlap
-      draftRebuildOnSchemaChange.value = settings.indexRebuildOnSchemaChange
       draftSearchTopK.value = settings.vectorSearchTopK
       draftSearchMaxDistance.value = settings.vectorSearchMaxDistance
       draftRaftHost.value = settings.raftHost
@@ -150,7 +148,6 @@ function save() {
   settings.vectorModelName = draftVectorModelName.value.trim()
   settings.vectorChunkSize = draftVectorChunkSize.value
   settings.vectorChunkOverlap = draftVectorChunkOverlap.value
-  settings.indexRebuildOnSchemaChange = draftRebuildOnSchemaChange.value
   settings.vectorSearchTopK = draftSearchTopK.value
   settings.vectorSearchMaxDistance = draftSearchMaxDistance.value
   settings.raftHost = draftRaftHost.value.trim()
@@ -273,24 +270,7 @@ function cancel() {
             placeholder="md_docs"
           />
         </div>
-        <p class="field-hint">全文检索使用的索引表名，默认 md_docs</p>
-
-        <div class="settings-field" :class="{ dimmed: !draftIndexEnabled || !draftFulltextEnabled }">
-          <div class="field-row">
-            <div class="field-label">索引结构变更时重建</div>
-            <label class="switch" :class="{ on: draftRebuildOnSchemaChange }">
-              <input
-                v-model="draftRebuildOnSchemaChange"
-                type="checkbox"
-                :disabled="!draftIndexEnabled || !draftFulltextEnabled"
-              />
-              <span class="switch-slider"></span>
-            </label>
-          </div>
-          <p class="field-hint">
-            开启后，当索引需要的字段有新增时会清空并重建索引（已有索引数据会丢失，需重新生成）；关闭时不做任何变更
-          </p>
-        </div>
+        <p class="field-hint">全文检索使用的索引表名，默认 md_docs；字段结构升级时会自动清空重建，并重置全文索引状态</p>
 
         <div class="settings-section-title">向量文本索引服务（laoflchdb-rust, gRPC）</div>
 

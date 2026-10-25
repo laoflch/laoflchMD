@@ -104,6 +104,12 @@ watch([() => settings.indexEnabled, () => settings.vectorTextEnabled], () => {
   }
 })
 
+// 保存后重建索引完成：重新检测当前目录的「全文」「向量」标签
+watch(() => editor.indexRefreshVersion, () => {
+  const keys = s3.files.filter((f) => f.isMarkdown).map((f) => f.key)
+  if (s3.currentBucket && keys.length > 0) checkIndexed(keys)
+})
+
 // 索引详情弹窗状态
 const indexInfoOpen = ref(false)
 const indexInfoDoc = ref<IndexSearchResult | null>(null)

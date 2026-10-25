@@ -82,7 +82,7 @@ electron.contextBridge.exposeInMainWorld("api", {
   // 本机主机名
   getHostname: () => electron.ipcRenderer.invoke("app:hostname"),
   // Full-text search (laoflchdb-rust)
-  indexEnsure: (protocol, host, port, indexName, allowRebuild) => electron.ipcRenderer.invoke("index:ensure", protocol, host, port, indexName, allowRebuild),
+  indexEnsure: (protocol, host, port, indexName, raft) => electron.ipcRenderer.invoke("index:ensure", protocol, host, port, indexName, raft),
   indexSearch: (protocol, host, port, indexName, query, limit) => electron.ipcRenderer.invoke("index:search", protocol, host, port, indexName, query, limit),
   indexLocalFile: (protocol, host, port, indexName, filePath, raft) => electron.ipcRenderer.invoke("index:indexLocal", protocol, host, port, indexName, filePath, raft),
   indexDir: (protocol, host, port, indexName, dirPath, raft) => electron.ipcRenderer.invoke("index:indexDir", protocol, host, port, indexName, dirPath, raft),

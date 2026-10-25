@@ -141,6 +141,13 @@ watch([() => settings.indexEnabled, () => settings.vectorTextEnabled], () => {
   }
 })
 
+// 保存后重建索引完成：重新检测当前目录的「全文」「向量」标签
+watch(() => store.indexRefreshVersion, () => {
+  if (rootDir.value) {
+    checkIndexed(treeData.value)
+  }
+})
+
 // 索引详情弹窗状态
 const indexInfoOpen = ref(false)
 const indexInfoDoc = ref<IndexSearchResult | null>(null)

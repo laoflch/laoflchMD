@@ -703,12 +703,34 @@ export function s3DocId(config: S3IndexConfig, bucket: string, key: string): str
   return `${endpoint}/${bucket}/${key}`
 }
 
+/**
+ * 全文索引表被清空重建后，把所有 Raft 条目的全文索引状态重置为未索引。
+ * 保留 has_vector 与 chunk_ids，避免丢失向量 chunk 的定位信息。
+ */
+async function resetFulltextState(raft: RaftConfig): Promise<void> {
+  try {
+    const entries = await raftScanMetas(raft)
+    for (const e of entries) {
+      if (e.meta.has_fulltext === '1' || e.meta.row_id) {
+        await raftPutMeta(raft, e.blake3, { ...e.meta, has_fulltext: '0', row_id: '' })
+      }
+    }
+  } catch {
+    // 状态重置失败不影响建表结果，下次索引时会重新写入
+  }
+}
+
+/**
+ * 确保索引表存在且字段齐全。
+ * 字段结构变化（schema 版本升级）时自动清空重建，
+ * 并把 Raft 中所有条目的全文索引状态重置为未索引（保留向量状态与 chunk ID）。
+ */
 async function ensureIndex(
   protocol: IndexProtocol,
   host: string,
   port: string,
   indexName: string,
-  allowRebuild: boolean
+  raft: RaftConfig
 ): Promise<{ ok: boolean; message: string; created: boolean }> {
   try {
     const client = getClient(protocol, host, port)
@@ -733,16 +755,15 @@ async function ensureIndex(
       if (hasAll) {
         return { ok: true, message: `索引 ${indexName} 已存在`, created: false }
       }
-      if (!allowRebuild) {
-        return {
-          ok: false,
-          message: `索引 ${indexName} 字段结构已变更（v${INDEX_SCHEMA_VERSION}），需要在全局设置中开启「索引结构变更时重建」后才能清空重建`,
-          created: false
-        }
-      }
       await client.dropIndex(indexName)
       await client.createIndex(indexName, INDEX_FIELDS)
-      return { ok: true, message: `索引 ${indexName} schema 已升级（v${INDEX_SCHEMA_VERSION}）并重建`, created: true }
+      // 重建后旧全文索引全部失效：同步重置 Raft 中的全文索引状态
+      await resetFulltextState(raft)
+      return {
+        ok: true,
+        message: `索引 ${indexName} 字段结构已升级（v${INDEX_SCHEMA_VERSION}）并清空重建，请重新生成全文索引`,
+        created: true
+      }
     }
     await client.createIndex(indexName, INDEX_FIELDS)
     return { ok: true, message: `已创建索引 ${indexName}（v${INDEX_SCHEMA_VERSION}）`, created: true }
@@ -865,7 +886,17 @@ export async function indexLocalFile(
       updatedAt: mtime
     })
     const client = getClient(protocol, host, port)
-    const rowId = await upsertDocument(client, indexName, old?.row_id || '', fields)
+    let rowId = await upsertDocument(client, indexName, old?.row_id || '', fields)
+    if (!/^\d+$/.test(rowId)) {
+      // 部分服务端不返回新文档的行 ID：按 doc_id 反查（旧行已在上一步删除）
+      try {
+        const hits = await client.searchMultiField(indexName, { doc_id: docId }, 50)
+        const hit = hits.find((h) => h.fields?.doc_id === docId && /^\d+$/.test(h.docId))
+        if (hit) rowId = hit.docId
+      } catch {
+        // 反查失败时保留空行 ID
+      }
+    }
     await raftPutMeta(raft, digest, {
       has_fulltext: '1',
       has_vector: old?.has_vector || '0',
@@ -969,7 +1000,17 @@ export async function indexS3File(
       updatedAt: new Date().toISOString()
     })
     const client = getClient(protocol, host, port)
-    const rowId = await upsertDocument(client, indexName, old?.row_id || '', fields)
+    let rowId = await upsertDocument(client, indexName, old?.row_id || '', fields)
+    if (!/^\d+$/.test(rowId)) {
+      // 部分服务端不返回新文档的行 ID：按 doc_id 反查（旧行已在上一步删除）
+      try {
+        const hits = await client.searchMultiField(indexName, { doc_id: docId }, 50)
+        const hit = hits.find((h) => h.fields?.doc_id === docId && /^\d+$/.test(h.docId))
+        if (hit) rowId = hit.docId
+      } catch {
+        // 反查失败时保留空行 ID
+      }
+    }
     await raftPutMeta(raft, digest, {
       has_fulltext: '1',
       has_vector: old?.has_vector || '0',
@@ -999,9 +1040,9 @@ export function registerIndexSearchHandlers(): void {
       host: string,
       port: string,
       indexName: string,
-      allowRebuild?: boolean
+      raft: RaftConfig
     ) => {
-      return ensureIndex(protocol, host, port, indexName, !!allowRebuild)
+      return ensureIndex(protocol, host, port, indexName, raft)
     }
   )
 

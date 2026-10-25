@@ -781,40 +781,96 @@ async function refreshAfterSave(
     if (!content.trim()) return { ok: true, message: '' }
     const digest = await computeBlake3(content)
     const docId = kind === 's3' ? s3DocId(config!, bucket!, key!) : localDocId(filePath)
-    const entries = await raftScanMetas(raft)
-    // 同一文件（内容已变化）的旧状态记录
-    const stale = entries.filter((e) => e.meta.doc_id === docId && e.blake3 !== digest)
-    if (!stale.length) return { ok: true, message: '' }
-
+    const current = await raftGetMeta(raft, digest)
+    const currentRowId = current && current.doc_id === docId ? current.row_id : ''
     const ftClient = fulltext ? getClient(fulltext.protocol, fulltext.host, fulltext.port) : null
     const vecClient = vector ? getVectorClient(vector.host, vector.port) : null
-    let wantFulltext = false
-    let wantVector = false
-    for (const e of stale) {
-      if (e.meta.has_fulltext === '1') {
-        wantFulltext = true
-        if (ftClient && /^\d+$/.test(e.meta.row_id)) {
-          try {
-            await ftClient.deleteDocument(fulltext!.indexName, e.meta.row_id)
-          } catch {
-            // 旧全文索引删除失败不阻塞新索引生成
-          }
-        }
-      }
-      if (e.meta.has_vector === '1') {
-        wantVector = true
-        if (vecClient) {
-          for (const id of e.meta.chunk_ids) {
-            try {
-              await vecClient.deleteEmbedding(id, vector!.indexName)
-            } catch {
-              // 单条向量删除失败不阻塞整体
+
+    // 全文索引中该文件的历史条目：新旧 schema 都有 doc_id 字段，可据此定位旧行
+    // （旧版 v3 条目还带 blake3 / has_vector / chunks 字段）
+    let mdHits: Array<{
+      rowId: string
+      blake3: string
+      hasVector: boolean
+      chunkIds: number[]
+    }> = []
+    if (ftClient && fulltext) {
+      try {
+        const res = await ftClient.searchMultiField(fulltext.indexName, { doc_id: docId }, 100)
+        mdHits = res
+          .filter((r) => r.fields?.doc_id === docId)
+          .map((r) => {
+            let chunkIds: number[] = []
+            if (r.fields?.chunks) {
+              try {
+                const arr = JSON.parse(r.fields.chunks)
+                if (Array.isArray(arr)) {
+                  chunkIds = arr
+                    .map((c: any) => Number(c?.id))
+                    .filter((id: any) => Number.isFinite(id))
+                }
+              } catch {
+                // 忽略损坏的 chunks 字段
+              }
             }
-          }
+            return {
+              rowId: r.docId,
+              blake3: r.fields?.blake3 || '',
+              hasVector: r.fields?.has_vector === '1',
+              chunkIds
+            }
+          })
+      } catch {
+        // 索引表不存在或查询失败时忽略
+      }
+    }
+    const legacyDigests = new Set(mdHits.map((h) => h.blake3).filter(Boolean))
+
+    // Raft 中的旧状态：新格式按 doc_id 匹配，旧格式（无 doc_id）按全文索引条目中的 blake3 匹配
+    const entries = await raftScanMetas(raft)
+    const staleRaft = entries.filter(
+      (e) => e.blake3 !== digest && (e.meta.doc_id === docId || legacyDigests.has(e.blake3))
+    )
+    // 需要删除的旧全文索引行（排除当前内容对应的行）
+    const staleRows = mdHits.filter((h) => h.rowId !== currentRowId).map((h) => h.rowId)
+    // 当前摘要的状态记录若缺少行 ID / chunk ID，同样需要重建修复
+    const brokenFulltext = !!current && current.has_fulltext === '1' && !/^\d+$/.test(current.row_id)
+    const brokenVector = !!current && current.has_vector === '1' && !current.chunk_ids.length
+    if (!staleRaft.length && !staleRows.length && !brokenFulltext && !brokenVector) {
+      return { ok: true, message: '' }
+    }
+
+    const wantFulltext =
+      staleRows.length > 0 ||
+      brokenFulltext ||
+      staleRaft.some((e) => e.meta.has_fulltext === '1')
+    const staleChunks = new Set<number>()
+    for (const e of staleRaft) for (const id of e.meta.chunk_ids) staleChunks.add(id)
+    for (const h of mdHits) if (h.rowId !== currentRowId) for (const id of h.chunkIds) staleChunks.add(id)
+    const wantVector =
+      staleChunks.size > 0 || brokenVector || staleRaft.some((e) => e.meta.has_vector === '1')
+
+    // 删除旧全文索引行
+    for (const rowId of Array.from(new Set(staleRows))) {
+      if (!ftClient || !fulltext || !/^\d+$/.test(rowId)) continue
+      try {
+        await ftClient.deleteDocument(fulltext.indexName, rowId)
+      } catch {
+        // 旧全文索引删除失败不阻塞新索引生成
+      }
+    }
+    // 删除旧向量 chunk
+    if (vecClient && vector) {
+      for (const id of Array.from(staleChunks)) {
+        try {
+          await vecClient.deleteEmbedding(id, vector.indexName)
+        } catch {
+          // 单条向量删除失败不阻塞整体
         }
       }
-      await raftDeleteMeta(raft, e.blake3)
     }
+    // 清除旧摘要对应的 Raft 记录
+    for (const e of staleRaft) await raftDeleteMeta(raft, e.blake3)
 
     const generated: string[] = []
     if (wantFulltext && fulltext?.regenerate) {

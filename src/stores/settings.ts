@@ -27,7 +27,6 @@ interface PersistedSettings {
   restHost: string
   restPort: string
   indexName: string
-  indexRebuildOnSchemaChange: boolean
   vectorTextEnabled: boolean
   vectorIndexName: string
   vectorModelName: string
@@ -60,8 +59,6 @@ export const useSettingsStore = defineStore('settings', () => {
   const restHost = ref(DEFAULT_REST_HOST)
   const restPort = ref(DEFAULT_REST_PORT)
   const indexName = ref(DEFAULT_INDEX_NAME)
-  // 索引结构（字段）变更时是否允许清空重建：默认关闭，避免误清空已有索引数据
-  const indexRebuildOnSchemaChange = ref(false)
   const vectorIndexName = ref(DEFAULT_VECTOR_INDEX_NAME)
   const vectorModelName = ref(DEFAULT_VECTOR_MODEL_NAME)
   const vectorChunkSize = ref(800)
@@ -94,9 +91,6 @@ export const useSettingsStore = defineStore('settings', () => {
         if (saved.restHost) restHost.value = saved.restHost
         if (saved.restPort) restPort.value = saved.restPort
         if (saved.indexName) indexName.value = saved.indexName
-        if (typeof saved.indexRebuildOnSchemaChange === 'boolean') {
-          indexRebuildOnSchemaChange.value = saved.indexRebuildOnSchemaChange
-        }
         if (saved.vectorIndexName) vectorIndexName.value = saved.vectorIndexName
         if (saved.vectorModelName) vectorModelName.value = saved.vectorModelName
         if (typeof saved.vectorChunkSize === 'number') vectorChunkSize.value = saved.vectorChunkSize
@@ -130,7 +124,6 @@ export const useSettingsStore = defineStore('settings', () => {
       restHost,
       restPort,
       indexName,
-      indexRebuildOnSchemaChange,
       vectorIndexName,
       vectorModelName,
       vectorChunkSize,
@@ -154,7 +147,6 @@ export const useSettingsStore = defineStore('settings', () => {
         restHost: restHost.value,
         restPort: restPort.value,
         indexName: indexName.value,
-        indexRebuildOnSchemaChange: indexRebuildOnSchemaChange.value,
         vectorIndexName: vectorIndexName.value,
         vectorModelName: vectorModelName.value,
         vectorChunkSize: vectorChunkSize.value,
@@ -181,7 +173,6 @@ export const useSettingsStore = defineStore('settings', () => {
     restHost,
     restPort,
     indexName,
-    indexRebuildOnSchemaChange,
     vectorIndexName,
     vectorModelName,
     vectorChunkSize,

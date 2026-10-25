@@ -85,7 +85,7 @@ async function ensureIndex() {
       host.value,
       port.value,
       settings.indexName,
-      settings.indexRebuildOnSchemaChange
+      raftCfg.value
     )
     if (res.ok) {
       // 索引 md_docs 已存在等消息移到右上角，绿色提示，8 秒后移除
