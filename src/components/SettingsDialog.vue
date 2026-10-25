@@ -34,7 +34,6 @@ const draftRaftProtocol = ref<IndexProtocol>('grpc')
 const draftRaftGrpcPort = ref('')
 const draftRaftRestPort = ref('')
 const draftRaftGroup = ref('')
-const draftRaftSyncEnabled = ref(false)
 const errorMsg = ref('')
 
 // 打开时载入当前设置
@@ -63,7 +62,6 @@ watch(
       draftRaftGrpcPort.value = settings.raftGrpcPort
       draftRaftRestPort.value = settings.raftRestPort
       draftRaftGroup.value = settings.raftGroup
-      draftRaftSyncEnabled.value = settings.raftSyncEnabled
       errorMsg.value = ''
     }
   }
@@ -123,7 +121,7 @@ function save() {
     errorMsg.value = '向量检索距离上限需为不小于 0 的数值（0 表示不筛选）'
     return
   }
-  if (draftRaftSyncEnabled.value) {
+  if (draftIndexEnabled.value) {
     if (!draftRaftHost.value.trim()) {
       errorMsg.value = 'Raft 服务地址不能为空'
       return
@@ -160,7 +158,6 @@ function save() {
   settings.raftGrpcPort = draftRaftGrpcPort.value.trim()
   settings.raftRestPort = draftRaftRestPort.value.trim()
   settings.raftGroup = draftRaftGroup.value.trim()
-  settings.raftSyncEnabled = draftRaftSyncEnabled.value
   emit('close')
 }
 
@@ -366,22 +363,9 @@ function cancel() {
         </div>
         <p class="field-hint">只保留距离小于该值的结果（距离越小越相关），0 表示不筛选</p>
 
-        <div class="settings-section-title">Raft 状态同步（laoflchdb-rust）</div>
+        <div class="settings-section-title">Raft 索引状态（laoflchdb-rust）</div>
 
-        <div class="settings-field">
-          <div class="field-row">
-            <div class="field-label">同步索引状态</div>
-            <label class="switch" :class="{ on: draftRaftSyncEnabled }">
-              <input v-model="draftRaftSyncEnabled" type="checkbox" />
-              <span class="switch-slider"></span>
-            </label>
-          </div>
-          <p class="field-hint">
-            开启后启动时把索引条目的 blake3 / 全文索引 / 向量索引状态写入 Raft，索引状态标签改为从 Raft 读取；关闭时仍查询 md_docs 索引条目
-          </p>
-        </div>
-
-        <div class="settings-field" :class="{ dimmed: !draftIndexEnabled || !draftRaftSyncEnabled }">
+        <div class="settings-field" :class="{ dimmed: !draftIndexEnabled }">
           <div class="field-label">连接协议</div>
           <div class="radio-group">
             <label class="radio-option" :class="{ active: draftRaftProtocol === 'grpc' }">
@@ -395,11 +379,11 @@ function cancel() {
           </div>
         </div>
 
-        <div class="settings-field inline-field" :class="{ dimmed: !draftIndexEnabled || !draftRaftSyncEnabled }">
+        <div class="settings-field inline-field" :class="{ dimmed: !draftIndexEnabled }">
           <div class="field-label">服务地址</div>
           <input v-model="draftRaftHost" class="settings-input" type="text" placeholder="127.0.0.1" />
         </div>
-        <div class="settings-field inline-field" :class="{ dimmed: !draftIndexEnabled || !draftRaftSyncEnabled }">
+        <div class="settings-field inline-field" :class="{ dimmed: !draftIndexEnabled }">
           <div class="field-label">gRPC 端口</div>
           <input
             v-model="draftRaftGrpcPort"
@@ -411,7 +395,7 @@ function cancel() {
         </div>
         <div
           class="settings-field inline-field"
-          :class="{ dimmed: !draftIndexEnabled || !draftRaftSyncEnabled || draftRaftProtocol !== 'rest' }"
+          :class="{ dimmed: !draftIndexEnabled || draftRaftProtocol !== 'rest' }"
         >
           <div class="field-label">REST 端口</div>
           <input
@@ -422,12 +406,12 @@ function cancel() {
             :disabled="draftRaftProtocol !== 'rest'"
           />
         </div>
-        <div class="settings-field inline-field" :class="{ dimmed: !draftIndexEnabled || !draftRaftSyncEnabled }">
+        <div class="settings-field inline-field" :class="{ dimmed: !draftIndexEnabled }">
           <div class="field-label">组名</div>
           <input v-model="draftRaftGroup" class="settings-input" type="text" placeholder="group-laoflchMD-etc" />
         </div>
         <p class="field-hint">
-          key 为 INDEX + 空字符 + blake3，value 为含 blake3 / has_fulltext / has_vector 的 JSON
+          文件是否已生成全文索引 / 向量索引统一保存在 Raft：key 为 INDEX + 空字符 + 文件 blake3，value 含 has_fulltext、has_vector、doc_id、row_id 与 chunk_ids
         </p>
 
         <p v-if="errorMsg" class="settings-error">{{ errorMsg }}</p>

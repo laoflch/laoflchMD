@@ -40,7 +40,6 @@ interface PersistedSettings {
   raftGrpcPort: string
   raftRestPort: string
   raftGroup: string
-  raftSyncEnabled: boolean
 }
 
 /**
@@ -71,14 +70,12 @@ export const useSettingsStore = defineStore('settings', () => {
   const vectorSearchTopK = ref(30)
   // 向量检索：距离上限（只保留 distance < 该值的结果），0 表示不筛选
   const vectorSearchMaxDistance = ref(0.4)
-  // Raft KV：启动时同步索引状态（blake3/has_fulltext/has_vector）的目标服务
+  // Raft KV：保存每个文件索引状态（key 为 "INDEX" + \0 + blake3）的目标服务
   const raftProtocol = ref<IndexProtocol>('grpc')
   const raftHost = ref(DEFAULT_RAFT_HOST)
   const raftGrpcPort = ref(DEFAULT_RAFT_GRPC_PORT)
   const raftRestPort = ref(DEFAULT_RAFT_REST_PORT)
   const raftGroup = ref(DEFAULT_RAFT_GROUP)
-  // 是否把索引状态同步到 Raft：开启后启动时同步，且索引状态改为从 Raft 读取
-  const raftSyncEnabled = ref(false)
 
   // 初始化：从 localStorage 读取
   if (typeof localStorage !== 'undefined') {
@@ -115,7 +112,6 @@ export const useSettingsStore = defineStore('settings', () => {
         if (saved.raftGrpcPort) raftGrpcPort.value = saved.raftGrpcPort
         if (saved.raftRestPort) raftRestPort.value = saved.raftRestPort
         if (saved.raftGroup) raftGroup.value = saved.raftGroup
-        if (typeof saved.raftSyncEnabled === 'boolean') raftSyncEnabled.value = saved.raftSyncEnabled
       }
     } catch {
       // 忽略损坏的设置数据，使用默认值
@@ -145,8 +141,7 @@ export const useSettingsStore = defineStore('settings', () => {
       raftProtocol,
       raftGrpcPort,
       raftRestPort,
-      raftGroup,
-      raftSyncEnabled
+      raftGroup
     ],
     () => {
       const data: PersistedSettings = {
@@ -170,8 +165,7 @@ export const useSettingsStore = defineStore('settings', () => {
         raftProtocol: raftProtocol.value,
         raftGrpcPort: raftGrpcPort.value,
         raftRestPort: raftRestPort.value,
-        raftGroup: raftGroup.value,
-        raftSyncEnabled: raftSyncEnabled.value
+        raftGroup: raftGroup.value
       }
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(data))
     }
@@ -198,7 +192,6 @@ export const useSettingsStore = defineStore('settings', () => {
     raftProtocol,
     raftGrpcPort,
     raftRestPort,
-    raftGroup,
-    raftSyncEnabled
+    raftGroup
   }
 })

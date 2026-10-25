@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { useS3Store } from './s3'
+import { useSettingsStore } from './settings'
+import { useToastStore } from './toast'
 import { useEditorDom } from '../composables/useEditorDom'
 import MarkdownIt from 'markdown-it'
 import TurndownService from 'turndown'
@@ -488,6 +490,75 @@ function hello() {
     }
   }
 
+  // 保存后刷新索引：删除该文件旧的全文/向量索引与 Raft 状态，
+  // 再按旧状态里的 has_fulltext / has_vector 标识重新生成（子开关关闭时只清理不重建）
+  async function refreshIndexAfterSave(kind: 'local' | 's3', targetPath: string) {
+    const settings = useSettingsStore()
+    if (!settings.indexEnabled) return
+    const s3 = useS3Store()
+    const isS3 = kind === 's3'
+    const bucket = isS3 ? s3Source.value?.bucket : undefined
+    const key = isS3 ? s3Source.value?.key : undefined
+    if (isS3 && (!bucket || !key)) return
+    const raft = {
+      protocol: settings.raftProtocol,
+      host: settings.raftHost,
+      port: settings.raftProtocol === 'grpc' ? settings.raftGrpcPort : settings.raftRestPort,
+      group: settings.raftGroup
+    }
+    const fulltext = {
+      protocol: settings.indexProtocol,
+      host: settings.indexProtocol === 'grpc' ? settings.grpcHost : settings.restHost,
+      port: settings.indexProtocol === 'grpc' ? settings.grpcPort : settings.restPort,
+      indexName: settings.indexName,
+      regenerate: settings.fulltextEnabled
+    }
+    const vector = {
+      host: settings.grpcHost,
+      port: settings.grpcPort,
+      indexName: settings.vectorIndexName,
+      modelName: settings.vectorModelName,
+      chunkSize: settings.vectorChunkSize,
+      overlap: settings.vectorChunkOverlap,
+      regenerate: settings.vectorTextEnabled
+    }
+    try {
+      const res = await window.api.indexRefreshAfterSave(
+        raft,
+        kind,
+        targetPath,
+        isS3 ? s3.plainConfig() : undefined,
+        bucket,
+        key,
+        fulltext,
+        vector
+      )
+      // message 为空表示该文件没有旧索引，无需重建，不打扰用户
+      if (res?.message) {
+        const name = targetPath.split(/[\\/]/).pop() || targetPath
+        const toastStore = useToastStore()
+        toastStore.pushToast(res.ok ? 'ok' : 'err', `${res.message}：${name}`)
+      }
+    } catch (e) {
+      const toastStore = useToastStore()
+      toastStore.pushToast('err', `重建索引失败：${e instanceof Error ? e.message : e}`)
+    }
+  }
+
+  // 同一文件的索引重建串行执行，避免多次快速保存时并发重建互相干扰
+  const refreshQueues = new Map<string, Promise<void>>()
+
+  // 保存后异步调度索引重建：立即返回，不阻塞保存；完成后推送提示
+  function scheduleRefreshIndexAfterSave(kind: 'local' | 's3', targetPath: string) {
+    const taskKey = `${kind}:${targetPath}`
+    const prev = refreshQueues.get(taskKey) || Promise.resolve()
+    const next = prev.then(() => refreshIndexAfterSave(kind, targetPath))
+    refreshQueues.set(taskKey, next)
+    void next.finally(() => {
+      if (refreshQueues.get(taskKey) === next) refreshQueues.delete(taskKey)
+    })
+  }
+
   async function saveFile() {
     syncEditablePreviewToContent()
     console.log('[saveFile] triggered, s3Source=', s3Source.value, 'filePath=', filePath.value,
@@ -503,6 +574,7 @@ function hello() {
       )
       if (ok) {
         isModified.value = false
+        scheduleRefreshIndexAfterSave('s3', s3Source.value.key)
         return s3Source.value.key
       }
       return null
@@ -513,6 +585,7 @@ function hello() {
     if (result) {
       filePath.value = result
       isModified.value = false
+      scheduleRefreshIndexAfterSave('local', result)
     }
     return result
   }
@@ -522,6 +595,7 @@ function hello() {
     if (result) {
       filePath.value = result
       isModified.value = false
+      scheduleRefreshIndexAfterSave('local', result)
     }
     return result
   }

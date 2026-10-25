@@ -62,30 +62,6 @@ function toggleSidebar() {
   showSidebar.value = !showSidebar.value
 }
 
-// 启动后异步把索引状态（blake3 / 全文 / 向量）同步到 Raft KV，完成或失败均提示
-async function syncIndexMetaToRaft() {
-  if (!settings.indexEnabled || !settings.raftSyncEnabled) return
-  const protocol = settings.indexProtocol
-  const host = protocol === 'grpc' ? settings.grpcHost : settings.restHost
-  const port = protocol === 'grpc' ? settings.grpcPort : settings.restPort
-  const raftPort = settings.raftProtocol === 'grpc' ? settings.raftGrpcPort : settings.raftRestPort
-  try {
-    const res = await window.api.indexSyncRaft(protocol, host, port, settings.indexName, {
-      protocol: settings.raftProtocol,
-      host: settings.raftHost,
-      port: raftPort,
-      group: settings.raftGroup
-    })
-    if (res.ok) {
-      toastStore.pushToast('ok', `索引状态同步完成：已写入 ${res.count} 条`)
-    } else {
-      toastStore.pushToast('err', res.message || '索引状态同步失败')
-    }
-  } catch {
-    // 连接异常时静默，不影响应用使用
-  }
-}
-
 onMounted(async () => {
   // Detect system theme and apply it
   if (window.api.getSystemTheme) {
@@ -141,9 +117,6 @@ onMounted(async () => {
     const cleanup = window.api.onAbout(() => (showAbout.value = true))
     cleanupFns.push(cleanup)
   }
-
-  // 索引服务已启用时，界面加载完成后异步同步索引状态到 Raft（不阻塞启动）
-  syncIndexMetaToRaft()
 })
 
 // Global keyboard shortcuts

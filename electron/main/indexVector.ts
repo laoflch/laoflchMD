@@ -6,31 +6,27 @@ import {
   computeBlake3,
   fetchS3Content,
   getClient,
+  indexLocalFile,
+  indexS3File,
   localDocId,
-  queryByDigest,
   s3DocId,
-  upsertDocument,
-  buildFields,
-  type IndexProtocol,
-  type IndexSearchResult,
   type S3IndexConfig
 } from './indexSearch'
+import {
+  raftDeleteMeta,
+  raftGetMeta,
+  raftPutMeta,
+  raftScanMetas,
+  type RaftConfig
+} from './raftKv'
 
 /**
  * 向量文本索引服务（laoflchdb-rust）客户端。
  * - 仅支持 gRPC：VectorService（生成 embedding）+ EmbeddingIndexService（向量索引存取）
  * - 文档按固定块长分块，每块一条向量，块 ID 由「文件 BLAKE3 摘要 + 块序号」哈希生成（48bit）
- * - 服务端 SearchEmbedding 响应不含 fields，因此向量状态与 chunk 信息统一保存在
- *   全文索引 md_docs 的条目中（has_vector + chunks 字段），向量搜索时反查，不再使用本地映射
+ * - 服务端 SearchEmbedding 响应不含 fields，文件是否已索引及 chunk 向量 ID 统一保存在
+ *   Raft KV（key 为文件内容 blake3），向量搜索时扫描反查，不保存 chunk 片段内容
  */
-
-/** 全文索引服务（md_docs）连接参数：生成/删除向量索引时同步写入状态条目 */
-export interface SearchCfg {
-  protocol: IndexProtocol
-  host: string
-  port: string
-  indexName: string
-}
 
 const DEFAULT_USER = 'admin'
 const DEFAULT_PASS = 'laoflchdb'
@@ -38,6 +34,44 @@ const DEFAULT_VECTOR_DIM = 1024
 const DEFAULT_CHUNK_SIZE = 800
 const DEFAULT_CHUNK_OVERLAP = 100
 const DEFAULT_SEARCH_LIMIT = 20
+
+/** 全文索引文档 ID（本机主机名+路径 / S3 地址+key）解析出展示用信息 */
+function parseDocId(docId: string): {
+  title: string
+  path: string
+  kind: 'local' | 's3'
+  host: string
+  server: string
+  bucket: string
+  key: string
+} {
+  const hostname = getHostname()
+  if (docId.startsWith(hostname)) {
+    const p = docId.slice(hostname.length)
+    return {
+      title: basename(p, extname(p)) || basename(p),
+      path: p,
+      kind: 'local',
+      host: hostname,
+      server: '',
+      bucket: '',
+      key: ''
+    }
+  }
+  const m = docId.match(/^https?:\/\/([^/]+)\/([^/]+)\/(.+)$/)
+  if (m) {
+    return {
+      title: basename(m[3], extname(m[3])) || basename(m[3]),
+      path: m[3],
+      kind: 's3',
+      host: m[1],
+      server: m[1],
+      bucket: m[2],
+      key: m[3]
+    }
+  }
+  return { title: docId, path: docId, kind: 'local', host: '', server: '', bucket: '', key: '' }
+}
 
 // ———————— 手写 protobuf wire format 编解码（与 indexSearch.ts 同一套约定） ————————
 
@@ -624,29 +658,18 @@ async function createEmbeddingsBatched(
   return results
 }
 
-/** 按摘要从 md_docs 反查该文件已有的 chunk id，删除对应的向量数据（用于重新生成前的清理） */
+/** 删除该文件已有的全部 chunk 向量（chunk id 记录在 Raft 状态中） */
 async function deleteChunksOfDigest(
-  searchCfg: SearchCfg,
+  raft: RaftConfig,
   client: VectorGrpcClient,
   indexName: string,
   digest: string
 ): Promise<void> {
-  let old: IndexSearchResult | null = null
-  try {
-    old = await queryByDigest(searchCfg.protocol, searchCfg.host, searchCfg.port, searchCfg.indexName, digest)
-  } catch {
-    return
-  }
-  if (!old) return
-  let chunks: Array<{ id: number }> = []
-  try {
-    chunks = JSON.parse(old.fields.chunks || '[]')
-  } catch {
-    return
-  }
-  for (const c of chunks) {
+  const meta = await raftGetMeta(raft, digest)
+  if (!meta) return
+  for (const id of meta.chunk_ids) {
     try {
-      await client.deleteEmbedding(Number(c.id), indexName)
+      await client.deleteEmbedding(id, indexName)
     } catch {
       // 单条删除失败不阻塞整体
     }
@@ -654,7 +677,7 @@ async function deleteChunksOfDigest(
 }
 
 async function deleteVectorFile(
-  searchCfg: SearchCfg,
+  raft: RaftConfig,
   client: VectorGrpcClient,
   indexName: string,
   kind: 'local' | 's3',
@@ -663,69 +686,195 @@ async function deleteVectorFile(
   bucket?: string,
   key?: string
 ): Promise<void> {
-  // 通过文件内容摘要定位 md_docs 条目，反查 chunk id 后删除向量数据
   const content =
     kind === 's3' ? await fetchS3Content(config!, bucket!, key!) : readFileSync(path, 'utf8')
   const digest = await computeBlake3(content)
-  const old = await queryByDigest(searchCfg.protocol, searchCfg.host, searchCfg.port, searchCfg.indexName, digest)
-  if (!old) return
-  let chunks: Array<{ id: number }> = []
-  try {
-    chunks = JSON.parse(old.fields.chunks || '[]')
-  } catch {
-    chunks = []
-  }
-  for (const c of chunks) {
+  const meta = await raftGetMeta(raft, digest)
+  if (!meta) return
+  for (const id of meta.chunk_ids) {
     try {
-      await client.deleteEmbedding(Number(c.id), indexName)
+      await client.deleteEmbedding(id, indexName)
     } catch {
       // 单条删除失败不阻塞整体
     }
   }
-  // 同步 md_docs 条目：仍有全文索引则保留条目仅置 has_vector=0，否则删除整个条目
-  const searchClient = getClient(searchCfg.protocol, searchCfg.host, searchCfg.port)
-  if (old.fields.has_fulltext === '1') {
-    const merged: Record<string, string> = { ...old.fields }
-    merged.has_vector = '0'
-    merged.chunks = '[]'
-    await searchClient.deleteDocument(searchCfg.indexName, old.docId)
-    await searchClient.addDocument(searchCfg.indexName, '', merged)
+  // 仍有全文索引时保留状态记录，仅清除向量标识；否则删除整条状态
+  if (meta.has_fulltext === '1') {
+    await raftPutMeta(raft, digest, {
+      has_fulltext: '1',
+      has_vector: '0',
+      doc_id: meta.doc_id,
+      row_id: meta.row_id,
+      chunk_ids: []
+    })
   } else {
-    await searchClient.deleteDocument(searchCfg.indexName, old.docId)
+    await raftDeleteMeta(raft, digest)
   }
 }
 
 async function deleteVectorId(
-  searchCfg: SearchCfg,
+  raft: RaftConfig,
   client: VectorGrpcClient,
   indexName: string,
   id: number
 ): Promise<void> {
   await client.deleteEmbedding(id, indexName)
-  // 从 md_docs 反查该 chunk 所属条目并移除对应 chunk
-  const searchClient = getClient(searchCfg.protocol, searchCfg.host, searchCfg.port)
-  const entries = await searchClient.searchMultiField(searchCfg.indexName, { has_vector: '1' }, 10000)
+  // 扫描 Raft 状态定位该 chunk 所属文件，移除对应 ID
+  const entries = await raftScanMetas(raft)
   for (const e of entries) {
-    let chunks: Array<{ id: number; idx: number; total: number; snippet: string }> = []
-    try {
-      chunks = JSON.parse(e.fields.chunks || '[]')
-    } catch {
-      continue
-    }
-    const idx = chunks.findIndex((c) => Number(c.id) === id)
+    const idx = e.meta.chunk_ids.findIndex((cid) => cid === id)
     if (idx < 0) continue
-    chunks.splice(idx, 1)
-    const merged: Record<string, string> = { ...e.fields }
-    merged.chunks = JSON.stringify(chunks)
-    merged.has_vector = chunks.length ? '1' : '0'
-    if (!chunks.length && e.fields.has_fulltext !== '1') {
-      // 最后一个 chunk 且无全文索引：删除整个条目
-      await searchClient.deleteDocument(searchCfg.indexName, e.docId)
+    const rest = e.meta.chunk_ids.filter((cid) => cid !== id)
+    if (!rest.length && e.meta.has_fulltext !== '1') {
+      await raftDeleteMeta(raft, e.blake3)
     } else {
-      await searchClient.deleteDocument(searchCfg.indexName, e.docId)
-      await searchClient.addDocument(searchCfg.indexName, '', merged)
+      await raftPutMeta(raft, e.blake3, {
+        has_fulltext: e.meta.has_fulltext,
+        has_vector: rest.length ? '1' : '0',
+        doc_id: e.meta.doc_id,
+        row_id: e.meta.row_id,
+        chunk_ids: rest
+      })
     }
     break
+  }
+}
+
+/** 保存后刷新索引：全文索引与向量索引的服务参数（regenerate 为 false 时仅清理旧索引） */
+export interface RefreshFulltextCfg {
+  protocol: 'grpc' | 'rest'
+  host: string
+  port: string
+  indexName: string
+  regenerate: boolean
+}
+
+export interface RefreshVectorCfg {
+  host: string
+  port: string
+  indexName: string
+  modelName: string
+  chunkSize?: number
+  overlap?: number
+  regenerate: boolean
+}
+
+/**
+ * 文件保存后刷新索引：
+ * 1. 按规范 doc_id（本机主机名+路径 / S3 地址+bucket+key）找出该文件的所有旧索引状态
+ * 2. 删除旧全文索引文档与旧 chunk 向量，并清除旧摘要对应的 Raft 记录
+ * 3. 按旧状态中的 has_fulltext / has_vector 标识重新生成索引（子开关关闭时只清理不重建）
+ */
+async function refreshAfterSave(
+  raft: RaftConfig,
+  kind: 'local' | 's3',
+  filePath: string,
+  config: S3IndexConfig | undefined,
+  bucket: string | undefined,
+  key: string | undefined,
+  fulltext: RefreshFulltextCfg | null,
+  vector: RefreshVectorCfg | null
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    const content =
+      kind === 's3' ? await fetchS3Content(config!, bucket!, key!) : readFileSync(filePath, 'utf8')
+    if (!content.trim()) return { ok: true, message: '' }
+    const digest = await computeBlake3(content)
+    const docId = kind === 's3' ? s3DocId(config!, bucket!, key!) : localDocId(filePath)
+    const entries = await raftScanMetas(raft)
+    // 同一文件（内容已变化）的旧状态记录
+    const stale = entries.filter((e) => e.meta.doc_id === docId && e.blake3 !== digest)
+    if (!stale.length) return { ok: true, message: '' }
+
+    const ftClient = fulltext ? getClient(fulltext.protocol, fulltext.host, fulltext.port) : null
+    const vecClient = vector ? getVectorClient(vector.host, vector.port) : null
+    let wantFulltext = false
+    let wantVector = false
+    for (const e of stale) {
+      if (e.meta.has_fulltext === '1') {
+        wantFulltext = true
+        if (ftClient && /^\d+$/.test(e.meta.row_id)) {
+          try {
+            await ftClient.deleteDocument(fulltext!.indexName, e.meta.row_id)
+          } catch {
+            // 旧全文索引删除失败不阻塞新索引生成
+          }
+        }
+      }
+      if (e.meta.has_vector === '1') {
+        wantVector = true
+        if (vecClient) {
+          for (const id of e.meta.chunk_ids) {
+            try {
+              await vecClient.deleteEmbedding(id, vector!.indexName)
+            } catch {
+              // 单条向量删除失败不阻塞整体
+            }
+          }
+        }
+      }
+      await raftDeleteMeta(raft, e.blake3)
+    }
+
+    const generated: string[] = []
+    if (wantFulltext && fulltext?.regenerate) {
+      const res =
+        kind === 's3'
+          ? await indexS3File(
+              fulltext.protocol,
+              fulltext.host,
+              fulltext.port,
+              fulltext.indexName,
+              config!,
+              bucket!,
+              key!,
+              raft
+            )
+          : await indexLocalFile(
+              fulltext.protocol,
+              fulltext.host,
+              fulltext.port,
+              fulltext.indexName,
+              filePath,
+              raft
+            )
+      if (!res.ok) return { ok: false, message: `重建全文索引失败：${res.message}` }
+      generated.push('全文')
+    }
+    if (wantVector && vector?.regenerate) {
+      const res =
+        kind === 's3'
+          ? await indexVectorS3File(
+              raft,
+              vector.host,
+              vector.port,
+              vector.indexName,
+              vector.modelName,
+              config!,
+              bucket!,
+              key!,
+              vector.chunkSize || DEFAULT_CHUNK_SIZE,
+              vector.overlap === undefined ? DEFAULT_CHUNK_OVERLAP : vector.overlap
+            )
+          : await indexVectorLocalFile(
+              raft,
+              vector.host,
+              vector.port,
+              vector.indexName,
+              vector.modelName,
+              filePath,
+              vector.chunkSize || DEFAULT_CHUNK_SIZE,
+              vector.overlap === undefined ? DEFAULT_CHUNK_OVERLAP : vector.overlap
+            )
+      if (!res.ok) return { ok: false, message: `重建向量索引失败：${res.message}` }
+      generated.push('向量')
+    }
+    return {
+      ok: true,
+      message: generated.length ? `已重建${generated.join('、')}索引` : '已清理旧索引'
+    }
+  } catch (e: any) {
+    return { ok: false, message: e.message || '刷新索引失败' }
   }
 }
 
@@ -763,55 +912,26 @@ interface IndexVectorOutcome {
   count: number
 }
 
-/** 向量索引生成后：把状态与 chunk 信息写入 md_docs 条目（合并已有全文状态，未全文索引不保存正文） */
+/** 向量索引生成后：把 chunk 向量 ID 与向量标识写入 Raft 状态（保留已有全文索引信息） */
 async function syncEntryAfterVector(
-  searchCfg: SearchCfg,
-  meta: {
-    docId: string
-    title: string
-    path: string
-    kind: 'local' | 's3'
-    host: string
-    server: string
-    bucket: string
-    key: string
-    blake3: string
-    chunkRecords: Array<{ id: number; idx: number; total: number; snippet: string }>
-  }
+  raft: RaftConfig,
+  digest: string,
+  docId: string,
+  chunkIds: number[]
 ): Promise<void> {
-  let oldHasFulltext = '0'
-  let oldContent = ''
-  try {
-    const old = await queryByDigest(searchCfg.protocol, searchCfg.host, searchCfg.port, searchCfg.indexName, meta.blake3)
-    if (old) {
-      oldHasFulltext = old.fields.has_fulltext === '1' ? '1' : '0'
-      oldContent = oldHasFulltext === '1' ? old.fields.content || '' : ''
-    }
-  } catch {
-    // 查询失败按无旧状态处理
-  }
-  const fields = buildFields({
-    docId: meta.docId,
-    title: meta.title,
-    content: oldContent,
-    path: meta.path,
-    kind: meta.kind,
-    host: meta.host,
-    server: meta.server,
-    bucket: meta.bucket,
-    key: meta.key,
-    updatedAt: new Date().toISOString(),
-    blake3: meta.blake3,
-    hasFulltext: oldHasFulltext,
-    hasVector: '1',
-    chunks: JSON.stringify(meta.chunkRecords)
+  const old = await raftGetMeta(raft, digest)
+  await raftPutMeta(raft, digest, {
+    has_fulltext: old?.has_fulltext === '1' ? '1' : '0',
+    has_vector: chunkIds.length ? '1' : '0',
+    // 全文索引文档 ID 与行号仅在已生成全文索引时有效
+    doc_id: old?.doc_id || docId,
+    row_id: old?.has_fulltext === '1' ? old.row_id : '',
+    chunk_ids: chunkIds
   })
-  const client = getClient(searchCfg.protocol, searchCfg.host, searchCfg.port)
-  await upsertDocument(client, searchCfg.indexName, fields)
 }
 
 async function indexVectorLocalFile(
-  searchCfg: SearchCfg,
+  raft: RaftConfig,
   host: string,
   port: string,
   indexName: string,
@@ -831,15 +951,15 @@ async function indexVectorLocalFile(
       return { ok: true, message: `跳过空文件：${basename(filePath)}`, count: 0 }
     }
     const client = getVectorClient(host, port)
-    // 重新生成前删除该文件已有的向量数据（内容未变时摘要一致，可定位旧 chunk）
-    await deleteChunksOfDigest(searchCfg, client, indexName, digest)
+    // 重新生成前删除该文件已有的向量数据（chunk id 记录在 Raft 状态中）
+    await deleteChunksOfDigest(raft, client, indexName, digest)
     const embeddings = await createEmbeddingsBatched(client, modelName, chunks, DEFAULT_VECTOR_DIM)
 
     const title = basename(filePath, extname(filePath)) || basename(filePath)
-    const chunkRecords: Array<{ id: number; idx: number; total: number; snippet: string }> = []
+    const chunkIds: number[] = []
     for (let i = 0; i < chunks.length; i++) {
       const id = await chunkId(digest, i)
-      chunkRecords.push({ id, idx: i, total: chunks.length, snippet: chunks[i].slice(0, 300) })
+      chunkIds.push(id)
       await client.insertEmbedding(id, indexName, embeddings[i], {
         title,
         path: filePath,
@@ -855,19 +975,8 @@ async function indexVectorLocalFile(
       })
     }
 
-    // 同步写入 md_docs 状态条目
-    await syncEntryAfterVector(searchCfg, {
-      docId: localDocId(filePath),
-      title,
-      path: filePath,
-      kind: 'local',
-      host: getHostname(),
-      server: '',
-      bucket: '',
-      key: '',
-      blake3: digest,
-      chunkRecords
-    })
+    // 把 chunk 向量 ID 与向量标识写入 Raft 状态
+    await syncEntryAfterVector(raft, digest, localDocId(filePath), chunkIds)
     return { ok: true, message: `已生成向量索引：${basename(filePath)}（${chunks.length} 块）`, count: chunks.length }
   } catch (e: any) {
     return { ok: false, message: `向量索引 ${basename(filePath)} 失败：${e.message || e}`, count: 0 }
@@ -875,7 +984,7 @@ async function indexVectorLocalFile(
 }
 
 async function indexVectorDir(
-  searchCfg: SearchCfg,
+  raft: RaftConfig,
   host: string,
   port: string,
   indexName: string,
@@ -891,7 +1000,7 @@ async function indexVectorDir(
   for (let i = 0; i < files.length; i++) {
     const filePath = files[i]
     onProgress?.(i + 1, files.length, basename(filePath))
-    const res = await indexVectorLocalFile(searchCfg, host, port, indexName, modelName, filePath, chunkSize, overlap)
+    const res = await indexVectorLocalFile(raft, host, port, indexName, modelName, filePath, chunkSize, overlap)
     if (res.ok) okCount++
     else if (!firstErr) firstErr = res.message
   }
@@ -902,7 +1011,7 @@ async function indexVectorDir(
 }
 
 async function indexVectorS3File(
-  searchCfg: SearchCfg,
+  raft: RaftConfig,
   host: string,
   port: string,
   indexName: string,
@@ -925,15 +1034,15 @@ async function indexVectorS3File(
     }
     const client = getVectorClient(host, port)
     // 重新生成前删除该文件已有的向量数据（内容未变时摘要一致，可定位旧 chunk）
-    await deleteChunksOfDigest(searchCfg, client, indexName, digest)
+    await deleteChunksOfDigest(raft, client, indexName, digest)
     const embeddings = await createEmbeddingsBatched(client, modelName, chunks, DEFAULT_VECTOR_DIM)
 
     const server = (config.endpoint || 's3.amazonaws.com').replace(/\/+$/, '')
     const title = basename(key, extname(key)) || basename(key)
-    const chunkRecords: Array<{ id: number; idx: number; total: number; snippet: string }> = []
+    const chunkIds: number[] = []
     for (let i = 0; i < chunks.length; i++) {
       const id = await chunkId(digest, i)
-      chunkRecords.push({ id, idx: i, total: chunks.length, snippet: chunks[i].slice(0, 300) })
+      chunkIds.push(id)
       await client.insertEmbedding(id, indexName, embeddings[i], {
         title,
         path: key,
@@ -949,19 +1058,8 @@ async function indexVectorS3File(
       })
     }
 
-    // 同步写入 md_docs 状态条目
-    await syncEntryAfterVector(searchCfg, {
-      docId: s3DocId(config, bucket, key),
-      title,
-      path: key,
-      kind: 's3',
-      host: server,
-      server,
-      bucket,
-      key,
-      blake3: digest,
-      chunkRecords
-    })
+    // 把 chunk 向量 ID 与向量标识写入 Raft 状态
+    await syncEntryAfterVector(raft, digest, s3DocId(config, bucket, key), chunkIds)
     return { ok: true, message: `已生成向量索引：${basename(key)}（${chunks.length} 块）`, count: chunks.length }
   } catch (e: any) {
     return { ok: false, message: `向量索引 ${basename(key)} 失败：${e.message || e}`, count: 0 }
@@ -976,7 +1074,7 @@ export interface VectorSearchResult {
 }
 
 async function searchVector(
-  searchCfg: SearchCfg,
+  raft: RaftConfig,
   host: string,
   port: string,
   indexName: string,
@@ -989,46 +1087,45 @@ async function searchVector(
     const qEmb = await client.createEmbedding(modelName, [query], DEFAULT_VECTOR_DIM)
     if (!qEmb.length) throw new Error('查询向量生成失败')
     const hits = await client.searchEmbedding(qEmb[0].embedding, indexName, topK)
-    // 向量服务搜索结果不含 fields，从 md_docs 拉取所有 has_vector=1 的条目反查 chunk 信息
-    const searchClient = getClient(searchCfg.protocol, searchCfg.host, searchCfg.port)
-    const entries = await searchClient.searchMultiField(searchCfg.indexName, { has_vector: '1' }, 10000)
+    // 向量服务搜索结果不含 fields：扫描 Raft 状态，按 chunk 向量 ID 反查所属文件
+    const entries = await raftScanMetas(raft)
     const chunkMap = new Map<
       number,
-      { fields: Record<string, string>; chunk: { id: number; idx: number; total: number; snippet: string } }
+      { blake3: string; docId: string; idx: number; total: number }
     >()
     for (const e of entries) {
-      let chunks: Array<{ id: number; idx: number; total: number; snippet: string }> = []
-      try {
-        chunks = JSON.parse(e.fields.chunks || '[]')
-      } catch {
-        continue
-      }
-      for (const c of chunks) {
-        chunkMap.set(Number(c.id), { fields: e.fields, chunk: c })
-      }
+      const ids = e.meta.chunk_ids || []
+      ids.forEach((cid, idx) => {
+        chunkMap.set(cid, { blake3: e.blake3, docId: e.meta.doc_id, idx, total: ids.length })
+      })
     }
     const results: VectorSearchResult[] = hits.map((h) => {
       const rec = chunkMap.get(h.id)
+      const info = rec ? parseDocId(rec.docId) : null
+      let fields: Record<string, string> = {}
+      if (rec && info) {
+        fields = {
+          title: info.title,
+          path: info.path,
+          kind: info.kind,
+          host: info.host,
+          server: info.server,
+          bucket: info.bucket,
+          key: info.key,
+          doc_id: rec.docId,
+          blake3: rec.blake3,
+          chunk_index: String(rec.idx),
+          total_chunks: String(rec.total),
+          // chunk 片段内容不再保存，仅保留文件信息
+          snippet: ''
+        }
+      }
       return {
         docId: String(h.id),
         // Cosine 距离 → 相似度：1 - distance（clip 下限 0）
         score: Math.max(0, 1 - h.distance),
         distance: h.distance,
-        fields: rec
-          ? {
-              title: rec.fields.title || '',
-              path: rec.fields.path || '',
-              kind: rec.fields.kind || 'local',
-              host: rec.fields.host || '',
-              server: rec.fields.server || '',
-              bucket: rec.fields.bucket || '',
-              key: rec.fields.key || '',
-              blake3: rec.fields.blake3 || '',
-              chunk_index: String(rec.chunk.idx),
-              total_chunks: String(rec.chunk.total),
-              snippet: rec.chunk.snippet || ''
-            }
-          : {}
+        fields
       }
     })
     return { ok: true, message: '', results }
@@ -1062,7 +1159,7 @@ export function registerVectorIndexHandlers(): void {
     'vector:indexLocal',
     async (
       _e,
-      searchCfg: SearchCfg,
+      raft: RaftConfig,
       host: string,
       port: string,
       indexName: string,
@@ -1072,7 +1169,7 @@ export function registerVectorIndexHandlers(): void {
       overlap?: number
     ) => {
       return indexVectorLocalFile(
-        searchCfg,
+        raft,
         host,
         port,
         indexName,
@@ -1088,7 +1185,7 @@ export function registerVectorIndexHandlers(): void {
     'vector:indexDir',
     async (
       e,
-      searchCfg: SearchCfg,
+      raft: RaftConfig,
       host: string,
       port: string,
       indexName: string,
@@ -1098,7 +1195,7 @@ export function registerVectorIndexHandlers(): void {
       overlap?: number
     ) => {
       return indexVectorDir(
-        searchCfg,
+        raft,
         host,
         port,
         indexName,
@@ -1117,7 +1214,7 @@ export function registerVectorIndexHandlers(): void {
     'vector:indexS3',
     async (
       _e,
-      searchCfg: SearchCfg,
+      raft: RaftConfig,
       host: string,
       port: string,
       indexName: string,
@@ -1129,7 +1226,7 @@ export function registerVectorIndexHandlers(): void {
       overlap?: number
     ) => {
       return indexVectorS3File(
-        searchCfg,
+        raft,
         host,
         port,
         indexName,
@@ -1147,7 +1244,7 @@ export function registerVectorIndexHandlers(): void {
     'vector:search',
     async (
       _e,
-      searchCfg: SearchCfg,
+      raft: RaftConfig,
       host: string,
       port: string,
       indexName: string,
@@ -1155,7 +1252,7 @@ export function registerVectorIndexHandlers(): void {
       query: string,
       topK?: number
     ) => {
-      return searchVector(searchCfg, host, port, indexName, modelName, query, topK || DEFAULT_SEARCH_LIMIT)
+      return searchVector(raft, host, port, indexName, modelName, query, topK || DEFAULT_SEARCH_LIMIT)
     }
   )
 
@@ -1163,7 +1260,7 @@ export function registerVectorIndexHandlers(): void {
     'vector:deleteFile',
     async (
       _e,
-      searchCfg: SearchCfg,
+      raft: RaftConfig,
       host: string,
       port: string,
       indexName: string,
@@ -1175,7 +1272,7 @@ export function registerVectorIndexHandlers(): void {
     ) => {
       try {
         const client = getVectorClient(host, port)
-        await deleteVectorFile(searchCfg, client, indexName, kind, path, config, bucket, key)
+        await deleteVectorFile(raft, client, indexName, kind, path, config, bucket, key)
         return { ok: true, message: '已删除该文件的向量索引' }
       } catch (e: any) {
         return { ok: false, message: e.message || '删除向量索引失败' }
@@ -1187,7 +1284,7 @@ export function registerVectorIndexHandlers(): void {
     'vector:deleteId',
     async (
       _e,
-      searchCfg: SearchCfg,
+      raft: RaftConfig,
       host: string,
       port: string,
       indexName: string,
@@ -1199,11 +1296,29 @@ export function registerVectorIndexHandlers(): void {
           return { ok: false, message: `无效的向量 ID：${id}` }
         }
         const client = getVectorClient(host, port)
-        await deleteVectorId(searchCfg, client, indexName, num)
+        await deleteVectorId(raft, client, indexName, num)
         return { ok: true, message: '已删除该向量条目' }
       } catch (e: any) {
         return { ok: false, message: e.message || '删除向量条目失败' }
       }
+    }
+  )
+
+  // 文件保存后：删除旧全文/向量索引与 Raft 状态，再按旧标识重新生成
+  ipcMain.handle(
+    'index:refreshAfterSave',
+    async (
+      _e,
+      raft: RaftConfig,
+      kind: 'local' | 's3',
+      filePath: string,
+      config: S3IndexConfig | undefined,
+      bucket: string | undefined,
+      key: string | undefined,
+      fulltext: RefreshFulltextCfg | null,
+      vector: RefreshVectorCfg | null
+    ) => {
+      return refreshAfterSave(raft, kind, filePath, config, bucket, key, fulltext, vector)
     }
   )
 }

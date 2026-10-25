@@ -3,7 +3,7 @@ import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useEditorStore } from '../stores/editor'
 import { useSettingsStore } from '../stores/settings'
 import { useToastStore } from '../stores/toast'
-import type { FileEntry, IndexSearchConfig, IndexSearchResult } from '../types'
+import type { FileEntry, RaftConfig, IndexSearchResult } from '../types'
 import TreeNodeItem from './TreeNodeItem.vue'
 import IndexInfoDialog from './IndexInfoDialog.vue'
 
@@ -150,10 +150,7 @@ const indexInfoEntry = ref<FileEntry | null>(null)
 async function showIndexInfo(entry: FileEntry) {
   indexInfoEntry.value = entry
   try {
-    const protocol = settings.indexProtocol
-    const host = protocol === 'grpc' ? settings.grpcHost : settings.restHost
-    const port = protocol === 'grpc' ? settings.grpcPort : settings.restPort
-    const res = await window.api.indexGetDoc(protocol, host, port, settings.indexName, 'local', entry.path)
+    const res = await window.api.indexGetDoc('local', entry.path, undefined, undefined, undefined, raftCfg())
     if (!res.ok || !res.doc) {
       toastStore.pushToast('err', res.message || '获取索引详情失败')
       return
@@ -271,14 +268,14 @@ async function handleIndex() {
         toastStore.pushToast('progress', `正在索引 ${p.done}/${p.total}: ${p.fileName}`, true, 8000)
       })
       try {
-        const res = await window.api.indexDir(protocol, host, port, settings.indexName, targetPath)
+        const res = await window.api.indexDir(protocol, host, port, settings.indexName, targetPath, raftCfg())
         toastStore.pushToast(res.ok ? 'ok' : 'err', res.message)
         if (res.ok) checkIndexed(treeData.value)
       } finally {
         unsubscribe()
       }
     } else {
-      const res = await window.api.indexLocalFile(protocol, host, port, settings.indexName, targetPath)
+      const res = await window.api.indexLocalFile(protocol, host, port, settings.indexName, targetPath, raftCfg())
       toastStore.pushToast(res.ok ? 'ok' : 'err', res.message)
       // 仅真正索引成功（跳过空文件时 docId 为空）才标记「全文」
       if (res.ok && res.docId !== undefined) {
@@ -299,21 +296,9 @@ const indexedPaths = ref<Set<string>>(new Set())
 const vectorIndexedPaths = ref<Set<string>>(new Set())
 let checkSeq = 0
 
-// 全文索引服务（md_docs）连接参数：向量索引的生成/删除也走该服务保存状态
-function searchCfg(): IndexSearchConfig {
-  const protocol = settings.indexProtocol
+// Raft KV 连接参数：索引状态的唯一真源
+function raftCfg(): RaftConfig {
   return {
-    protocol,
-    host: protocol === 'grpc' ? settings.grpcHost : settings.restHost,
-    port: protocol === 'grpc' ? settings.grpcPort : settings.restPort,
-    indexName: settings.indexName
-  }
-}
-
-// 索引状态查询配置：开启 Raft 同步后，状态改为从 Raft 按 blake3 读取
-function raftQueryCfg() {
-  return {
-    enabled: settings.raftSyncEnabled,
     protocol: settings.raftProtocol,
     host: settings.raftHost,
     port: settings.raftProtocol === 'grpc' ? settings.raftGrpcPort : settings.raftRestPort,
@@ -333,12 +318,8 @@ async function checkIndexed(files: FileEntry[]) {
   const seq = ++checkSeq
   try {
     const res = await window.api.indexCheckFiles(
-      searchCfg().protocol,
-      searchCfg().host,
-      searchCfg().port,
-      searchCfg().indexName,
       mdFiles.map((f) => f.path),
-      raftQueryCfg()
+      raftCfg()
     )
     if (seq !== checkSeq) return // 丢弃过期结果
     if (!res.ok) return
@@ -391,7 +372,7 @@ async function handleVectorIndex() {
       })
       try {
         const res = await window.api.vectorIndexDir(
-          searchCfg(),
+          raftCfg(),
           settings.grpcHost,
           settings.grpcPort,
           settings.vectorIndexName,
@@ -407,7 +388,7 @@ async function handleVectorIndex() {
       }
     } else {
       const res = await window.api.vectorIndexLocal(
-        searchCfg(),
+        raftCfg(),
         settings.grpcHost,
         settings.grpcPort,
         settings.vectorIndexName,
@@ -438,7 +419,7 @@ async function handleVectorDelete() {
   if (!targetPath) return
   try {
     const res = await window.api.vectorDeleteFile(
-      searchCfg(),
+      raftCfg(),
       settings.grpcHost,
       settings.grpcPort,
       settings.vectorIndexName,

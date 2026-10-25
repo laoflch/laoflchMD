@@ -4,7 +4,7 @@ import { useSettingsStore } from '../stores/settings'
 import { useEditorStore } from '../stores/editor'
 import { useS3Store } from '../stores/s3'
 import { useToastStore } from '../stores/toast'
-import type { IndexSearchResult, VectorSearchResult, VectorIndexStats, IndexSearchConfig } from '../types'
+import type { IndexSearchResult, VectorSearchResult, VectorIndexStats, RaftConfig } from '../types'
 
 const settings = useSettingsStore()
 const editor = useEditorStore()
@@ -44,12 +44,12 @@ const port = computed(() =>
 )
 const protocolLabel = computed(() => (settings.indexProtocol === 'grpc' ? 'gRPC' : 'REST'))
 
-// 全文索引服务（md_docs）连接参数：向量索引的生成/删除/搜索也走该服务保存/反查状态
-const searchCfg = computed<IndexSearchConfig>(() => ({
-  protocol: settings.indexProtocol,
-  host: host.value,
-  port: port.value,
-  indexName: settings.indexName
+// Raft KV 连接参数：索引状态的唯一真源（向量搜索按 chunk 向量 ID 反查文件）
+const raftCfg = computed<RaftConfig>(() => ({
+  protocol: settings.raftProtocol,
+  host: settings.raftHost,
+  port: settings.raftProtocol === 'grpc' ? settings.raftGrpcPort : settings.raftRestPort,
+  group: settings.raftGroup
 }))
 
 // 全文索引功能是否关闭（索引服务总开关 / 全文索引子开关）
@@ -153,7 +153,7 @@ async function searchVector(q: string) {
   vectorError.value = null
   try {
     const res = await window.api.vectorSearch(
-      searchCfg.value,
+      raftCfg.value,
       settings.grpcHost,
       settings.grpcPort,
       settings.vectorIndexName,
@@ -266,14 +266,15 @@ async function doDelete() {
   try {
     const res =
       target.tab === 'vector'
-        ? await window.api.vectorDeleteId(searchCfg.value, settings.grpcHost, settings.grpcPort, settings.vectorIndexName, target.item.docId)
+        ? await window.api.vectorDeleteId(raftCfg.value, settings.grpcHost, settings.grpcPort, settings.vectorIndexName, target.item.docId)
         : await window.api.indexDeleteDoc(
             settings.indexProtocol,
             host.value,
             port.value,
             settings.indexName,
             target.item.docId,
-            { ...target.item.fields } // 展开为普通对象，避免 Vue reactive Proxy 无法通过 IPC 克隆
+            { ...target.item.fields }, // 展开为普通对象，避免 Vue reactive Proxy 无法通过 IPC 克隆
+            raftCfg.value
           )
     if (res.ok) {
       if (target.tab === 'vector') {

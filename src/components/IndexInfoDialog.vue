@@ -78,7 +78,13 @@ async function doDelete() {
       port,
       settings.indexName,
       id,
-      { ...doc.fields }
+      { ...doc.fields },
+      {
+        protocol: settings.raftProtocol,
+        host: settings.raftHost,
+        port: settings.raftProtocol === 'grpc' ? settings.raftGrpcPort : settings.raftRestPort,
+        group: settings.raftGroup
+      }
     )
     if (res.ok) {
       toastStore.pushToast('ok', '删除成功：已从索引中移除该索引项')

@@ -1,5 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
+/** Raft KV 连接参数（索引状态唯一真源） */
+type RaftCfg = { protocol: 'grpc' | 'rest'; host: string; port: string; group: string }
+
 contextBridge.exposeInMainWorld('api', {
   // File operations
   openFile: () => ipcRenderer.invoke('dialog:openFile'),
@@ -105,10 +108,22 @@ contextBridge.exposeInMainWorld('api', {
     query: string,
     limit?: number
   ) => ipcRenderer.invoke('index:search', protocol, host, port, indexName, query, limit),
-  indexLocalFile: (protocol: 'grpc' | 'rest', host: string, port: string, indexName: string, filePath: string) =>
-    ipcRenderer.invoke('index:indexLocal', protocol, host, port, indexName, filePath),
-  indexDir: (protocol: 'grpc' | 'rest', host: string, port: string, indexName: string, dirPath: string) =>
-    ipcRenderer.invoke('index:indexDir', protocol, host, port, indexName, dirPath),
+  indexLocalFile: (
+    protocol: 'grpc' | 'rest',
+    host: string,
+    port: string,
+    indexName: string,
+    filePath: string,
+    raft: RaftCfg
+  ) => ipcRenderer.invoke('index:indexLocal', protocol, host, port, indexName, filePath, raft),
+  indexDir: (
+    protocol: 'grpc' | 'rest',
+    host: string,
+    port: string,
+    indexName: string,
+    dirPath: string,
+    raft: RaftCfg
+  ) => ipcRenderer.invoke('index:indexDir', protocol, host, port, indexName, dirPath, raft),
   indexS3File: (
     protocol: 'grpc' | 'rest',
     host: string,
@@ -116,46 +131,59 @@ contextBridge.exposeInMainWorld('api', {
     indexName: string,
     config: any,
     bucket: string,
-    key: string
-  ) => ipcRenderer.invoke('index:indexS3', protocol, host, port, indexName, config, bucket, key),
-  indexCheckFiles: (
-    protocol: 'grpc' | 'rest',
-    host: string,
-    port: string,
-    indexName: string,
-    paths: string[],
-    raft?: { enabled: boolean; protocol: 'grpc' | 'rest'; host: string; port: string; group: string }
-  ) => ipcRenderer.invoke('index:checkFiles', protocol, host, port, indexName, paths, raft),
-  indexCheckS3Files: (
-    protocol: 'grpc' | 'rest',
-    host: string,
-    port: string,
-    indexName: string,
-    config: any,
-    bucket: string,
-    keys: string[],
-    raft?: { enabled: boolean; protocol: 'grpc' | 'rest'; host: string; port: string; group: string }
-  ) => ipcRenderer.invoke('index:checkS3Files', protocol, host, port, indexName, config, bucket, keys, raft),
+    key: string,
+    raft: RaftCfg
+  ) => ipcRenderer.invoke('index:indexS3', protocol, host, port, indexName, config, bucket, key, raft),
+  indexCheckFiles: (paths: string[], raft: RaftCfg) =>
+    ipcRenderer.invoke('index:checkFiles', paths, raft),
+  indexCheckS3Files: (config: any, bucket: string, keys: string[], raft: RaftCfg) =>
+    ipcRenderer.invoke('index:checkS3Files', config, bucket, keys, raft),
   indexGetDoc: (
-    protocol: 'grpc' | 'rest',
-    host: string,
-    port: string,
-    indexName: string,
     kind: 'local' | 's3',
     path: string,
-    config?: any,
-    bucket?: string,
-    key?: string
-  ) => ipcRenderer.invoke('index:getDoc', protocol, host, port, indexName, kind, path, config, bucket, key),
-  indexDeleteDoc: (protocol: 'grpc' | 'rest', host: string, port: string, indexName: string, docId: string, fields?: Record<string, string>) =>
-    ipcRenderer.invoke('index:deleteDoc', protocol, host, port, indexName, docId, fields),
-  indexSyncRaft: (
+    config: any,
+    bucket: string | undefined,
+    key: string | undefined,
+    raft: RaftCfg
+  ) => ipcRenderer.invoke('index:getDoc', kind, path, config, bucket, key, raft),
+  indexDeleteDoc: (
     protocol: 'grpc' | 'rest',
     host: string,
     port: string,
     indexName: string,
-    raft: { protocol: 'grpc' | 'rest'; host: string; port: string; group: string }
-  ) => ipcRenderer.invoke('index:syncRaft', protocol, host, port, indexName, raft),
+    docId: string,
+    fields: Record<string, string> | undefined,
+    raft: RaftCfg
+  ) => ipcRenderer.invoke('index:deleteDoc', protocol, host, port, indexName, docId, fields, raft),
+  indexRefreshAfterSave: (
+    raft: RaftCfg,
+    kind: 'local' | 's3',
+    filePath: string,
+    config: any,
+    bucket: string | undefined,
+    key: string | undefined,
+    fulltext: { protocol: 'grpc' | 'rest'; host: string; port: string; indexName: string; regenerate: boolean } | null,
+    vector: {
+      host: string
+      port: string
+      indexName: string
+      modelName: string
+      chunkSize?: number
+      overlap?: number
+      regenerate: boolean
+    } | null
+  ) =>
+    ipcRenderer.invoke(
+      'index:refreshAfterSave',
+      raft,
+      kind,
+      filePath,
+      config,
+      bucket,
+      key,
+      fulltext,
+      vector
+    ),
   // 目录建索引进度事件（主进程逐文件推送）
   onIndexProgress: (callback: (progress: { done: number; total: number; fileName: string }) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, progress: { done: number; total: number; fileName: string }) =>
@@ -164,12 +192,11 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('index:progress', handler)
   },
 
-  // Vector text index (laoflchdb-rust, gRPC)。search 为全文索引服务（md_docs）连接参数，
-  // 用于同步保存向量状态与 chunk 信息
+  // Vector text index (laoflchdb-rust, gRPC)。索引状态保存在 Raft（key 为文件 blake3）
   vectorGetInfo: (host: string, port: string, indexName: string) =>
     ipcRenderer.invoke('vector:getInfo', host, port, indexName),
   vectorIndexLocal: (
-    search: { protocol: 'grpc' | 'rest'; host: string; port: string; indexName: string },
+    raft: RaftCfg,
     host: string,
     port: string,
     indexName: string,
@@ -177,9 +204,9 @@ contextBridge.exposeInMainWorld('api', {
     filePath: string,
     chunkSize?: number,
     overlap?: number
-  ) => ipcRenderer.invoke('vector:indexLocal', search, host, port, indexName, modelName, filePath, chunkSize, overlap),
+  ) => ipcRenderer.invoke('vector:indexLocal', raft, host, port, indexName, modelName, filePath, chunkSize, overlap),
   vectorIndexDir: (
-    search: { protocol: 'grpc' | 'rest'; host: string; port: string; indexName: string },
+    raft: RaftCfg,
     host: string,
     port: string,
     indexName: string,
@@ -187,9 +214,9 @@ contextBridge.exposeInMainWorld('api', {
     dirPath: string,
     chunkSize?: number,
     overlap?: number
-  ) => ipcRenderer.invoke('vector:indexDir', search, host, port, indexName, modelName, dirPath, chunkSize, overlap),
+  ) => ipcRenderer.invoke('vector:indexDir', raft, host, port, indexName, modelName, dirPath, chunkSize, overlap),
   vectorIndexS3: (
-    search: { protocol: 'grpc' | 'rest'; host: string; port: string; indexName: string },
+    raft: RaftCfg,
     host: string,
     port: string,
     indexName: string,
@@ -199,18 +226,18 @@ contextBridge.exposeInMainWorld('api', {
     key: string,
     chunkSize?: number,
     overlap?: number
-  ) => ipcRenderer.invoke('vector:indexS3', search, host, port, indexName, modelName, config, bucket, key, chunkSize, overlap),
+  ) => ipcRenderer.invoke('vector:indexS3', raft, host, port, indexName, modelName, config, bucket, key, chunkSize, overlap),
   vectorSearch: (
-    search: { protocol: 'grpc' | 'rest'; host: string; port: string; indexName: string },
+    raft: RaftCfg,
     host: string,
     port: string,
     indexName: string,
     modelName: string,
     query: string,
     topK?: number
-  ) => ipcRenderer.invoke('vector:search', search, host, port, indexName, modelName, query, topK),
+  ) => ipcRenderer.invoke('vector:search', raft, host, port, indexName, modelName, query, topK),
   vectorDeleteFile: (
-    search: { protocol: 'grpc' | 'rest'; host: string; port: string; indexName: string },
+    raft: RaftCfg,
     host: string,
     port: string,
     indexName: string,
@@ -219,14 +246,14 @@ contextBridge.exposeInMainWorld('api', {
     config?: any,
     bucket?: string,
     key?: string
-  ) => ipcRenderer.invoke('vector:deleteFile', search, host, port, indexName, kind, path, config, bucket, key),
+  ) => ipcRenderer.invoke('vector:deleteFile', raft, host, port, indexName, kind, path, config, bucket, key),
   vectorDeleteId: (
-    search: { protocol: 'grpc' | 'rest'; host: string; port: string; indexName: string },
+    raft: RaftCfg,
     host: string,
     port: string,
     indexName: string,
     id: string | number
-  ) => ipcRenderer.invoke('vector:deleteId', search, host, port, indexName, id),
+  ) => ipcRenderer.invoke('vector:deleteId', raft, host, port, indexName, id),
   onVectorProgress: (callback: (progress: { done: number; total: number; fileName: string }) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, progress: { done: number; total: number; fileName: string }) =>
       callback(progress)

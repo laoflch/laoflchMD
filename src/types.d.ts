@@ -76,14 +76,16 @@ declare global {
         host: string,
         port: string,
         indexName: string,
-        filePath: string
+        filePath: string,
+        raft: RaftConfig
       ) => Promise<{ ok: boolean; message: string; docId?: string }>
       indexDir: (
         protocol: IndexProtocol,
         host: string,
         port: string,
         indexName: string,
-        dirPath: string
+        dirPath: string,
+        raft: RaftConfig
       ) => Promise<{ ok: boolean; message: string; count: number }>
       indexS3File: (
         protocol: IndexProtocol,
@@ -92,43 +94,26 @@ declare global {
         indexName: string,
         config: S3Config,
         bucket: string,
-        key: string
+        key: string,
+        raft: RaftConfig
       ) => Promise<{ ok: boolean; message: string; docId?: string }>
       indexCheckFiles: (
-        protocol: IndexProtocol,
-        host: string,
-        port: string,
-        indexName: string,
         paths: string[],
-        raft?: RaftQueryConfig
+        raft: RaftConfig
       ) => Promise<{ ok: boolean; message: string; results: Record<string, IndexCheckResult> }>
       indexCheckS3Files: (
-        protocol: IndexProtocol,
-        host: string,
-        port: string,
-        indexName: string,
         config: S3Config,
         bucket: string,
         keys: string[],
-        raft?: RaftQueryConfig
+        raft: RaftConfig
       ) => Promise<{ ok: boolean; message: string; results: Record<string, IndexCheckResult> }>
-      indexSyncRaft: (
-        protocol: IndexProtocol,
-        host: string,
-        port: string,
-        indexName: string,
-        raft: { protocol: IndexProtocol; host: string; port: string; group: string }
-      ) => Promise<{ ok: boolean; message: string; count: number }>
       indexGetDoc: (
-        protocol: IndexProtocol,
-        host: string,
-        port: string,
-        indexName: string,
         kind: 'local' | 's3',
         path: string,
-        config?: S3Config,
-        bucket?: string,
-        key?: string
+        config: S3Config | undefined,
+        bucket: string | undefined,
+        key: string | undefined,
+        raft: RaftConfig
       ) => Promise<{ ok: boolean; message: string; doc: IndexSearchResult | null }>
       indexDeleteDoc: (
         protocol: IndexProtocol,
@@ -136,7 +121,32 @@ declare global {
         port: string,
         indexName: string,
         docId: string,
-        fields?: Record<string, string>
+        fields: Record<string, string> | undefined,
+        raft: RaftConfig
+      ) => Promise<{ ok: boolean; message: string }>
+      indexRefreshAfterSave: (
+        raft: RaftConfig,
+        kind: 'local' | 's3',
+        filePath: string,
+        config: S3Config | undefined,
+        bucket: string | undefined,
+        key: string | undefined,
+        fulltext: {
+          protocol: IndexProtocol
+          host: string
+          port: string
+          indexName: string
+          regenerate: boolean
+        } | null,
+        vector: {
+          host: string
+          port: string
+          indexName: string
+          modelName: string
+          chunkSize?: number
+          overlap?: number
+          regenerate: boolean
+        } | null
       ) => Promise<{ ok: boolean; message: string }>
       onIndexProgress: (
         callback: (progress: IndexProgress) => void
@@ -149,7 +159,7 @@ declare global {
         indexName: string
       ) => Promise<{ ok: boolean; message: string; stats: VectorIndexStats | null }>
       vectorIndexLocal: (
-        search: IndexSearchConfig,
+        raft: RaftConfig,
         host: string,
         port: string,
         indexName: string,
@@ -159,7 +169,7 @@ declare global {
         overlap?: number
       ) => Promise<{ ok: boolean; message: string; count: number }>
       vectorIndexDir: (
-        search: IndexSearchConfig,
+        raft: RaftConfig,
         host: string,
         port: string,
         indexName: string,
@@ -169,7 +179,7 @@ declare global {
         overlap?: number
       ) => Promise<{ ok: boolean; message: string; count: number }>
       vectorIndexS3: (
-        search: IndexSearchConfig,
+        raft: RaftConfig,
         host: string,
         port: string,
         indexName: string,
@@ -181,7 +191,7 @@ declare global {
         overlap?: number
       ) => Promise<{ ok: boolean; message: string; count: number }>
       vectorSearch: (
-        search: IndexSearchConfig,
+        raft: RaftConfig,
         host: string,
         port: string,
         indexName: string,
@@ -190,7 +200,7 @@ declare global {
         topK?: number
       ) => Promise<{ ok: boolean; message: string; results: VectorSearchResult[] }>
       vectorDeleteFile: (
-        search: IndexSearchConfig,
+        raft: RaftConfig,
         host: string,
         port: string,
         indexName: string,
@@ -201,7 +211,7 @@ declare global {
         key?: string
       ) => Promise<{ ok: boolean; message: string }>
       vectorDeleteId: (
-        search: IndexSearchConfig,
+        raft: RaftConfig,
         host: string,
         port: string,
         indexName: string,
@@ -251,27 +261,18 @@ export interface VersionNote {
 
 export type IndexProtocol = 'grpc' | 'rest'
 
-/** 全文索引服务（md_docs）连接参数：向量索引生成/删除/搜索时同步读写状态条目 */
-export interface IndexSearchConfig {
+/** Raft KV 连接参数：索引状态唯一真源（key 为 "INDEX" + \0 + 文件 blake3） */
+export interface RaftConfig {
   protocol: IndexProtocol
   host: string
   port: string
-  indexName: string
+  group: string
 }
 
 /** 单个文件的索引状态检查结果（全文 + 向量） */
 export interface IndexCheckResult {
   hasFulltext: boolean
   hasVector: boolean
-}
-
-/** 索引状态查询配置：enabled 为真时从 Raft KV 按 blake3 读取状态 */
-export interface RaftQueryConfig {
-  enabled: boolean
-  protocol: IndexProtocol
-  host: string
-  port: string
-  group: string
 }
 
 export interface IndexSearchResult {

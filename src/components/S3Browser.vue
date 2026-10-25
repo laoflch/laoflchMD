@@ -4,7 +4,7 @@ import { useS3Store } from '../stores/s3'
 import { useEditorStore } from '../stores/editor'
 import { useSettingsStore } from '../stores/settings'
 import { useToastStore } from '../stores/toast'
-import type { S3ObjectEntry, IndexSearchConfig, IndexSearchResult } from '../types'
+import type { S3ObjectEntry, RaftConfig, IndexSearchResult } from '../types'
 import IndexInfoDialog from './IndexInfoDialog.vue'
 
 const s3 = useS3Store()
@@ -17,21 +17,9 @@ const indexedKeys = ref<Set<string>>(new Set())
 const vectorIndexedKeys = ref<Set<string>>(new Set())
 let checkSeq = 0
 
-// 全文索引服务（md_docs）连接参数：向量索引的生成/删除也走该服务保存状态
-function searchCfg(): IndexSearchConfig {
-  const protocol = settings.indexProtocol
+// Raft KV 连接参数：索引状态的唯一真源
+function raftCfg(): RaftConfig {
   return {
-    protocol,
-    host: protocol === 'grpc' ? settings.grpcHost : settings.restHost,
-    port: protocol === 'grpc' ? settings.grpcPort : settings.restPort,
-    indexName: settings.indexName
-  }
-}
-
-// 索引状态查询配置：开启 Raft 同步后，状态改为从 Raft 按 blake3 读取
-function raftQueryCfg() {
-  return {
-    enabled: settings.raftSyncEnabled,
     protocol: settings.raftProtocol,
     host: settings.raftHost,
     port: settings.raftProtocol === 'grpc' ? settings.raftGrpcPort : settings.raftRestPort,
@@ -51,14 +39,10 @@ async function checkIndexed(keys: string[]) {
   const seq = ++checkSeq
   try {
     const res = await window.api.indexCheckS3Files(
-      searchCfg().protocol,
-      searchCfg().host,
-      searchCfg().port,
-      searchCfg().indexName,
       s3.plainConfig(),
       s3.currentBucket!,
       mdKeys,
-      raftQueryCfg()
+      raftCfg()
     )
     if (seq !== checkSeq) return // 丢弃过期结果
     if (!res.ok) return
@@ -129,19 +113,13 @@ const indexInfoKey = ref<string | null>(null)
 async function showIndexInfo(file: S3ObjectEntry) {
   indexInfoKey.value = file.key
   try {
-    const protocol = settings.indexProtocol
-    const host = protocol === 'grpc' ? settings.grpcHost : settings.restHost
-    const port = protocol === 'grpc' ? settings.grpcPort : settings.restPort
     const res = await window.api.indexGetDoc(
-      protocol,
-      host,
-      port,
-      settings.indexName,
       's3',
       '',
       s3.plainConfig(),
       s3.currentBucket!,
-      file.key
+      file.key,
+      raftCfg()
     )
     if (!res.ok || !res.doc) {
       toastStore.pushToast('err', res.message || '获取索引详情失败')
@@ -210,7 +188,8 @@ async function handleIndex() {
       settings.indexName,
       s3.plainConfig(),
       s3.currentBucket,
-      currentFile.value.key
+      currentFile.value.key,
+      raftCfg()
     )
     toastStore.pushToast(res.ok ? 'ok' : 'err', res.message)
     if (res.ok && res.docId !== undefined) {
@@ -243,7 +222,7 @@ async function handleVectorIndex() {
   vectorIndexing.value = true
   try {
     const res = await window.api.vectorIndexS3(
-      searchCfg(),
+      raftCfg(),
       settings.grpcHost,
       settings.grpcPort,
       settings.vectorIndexName,
@@ -274,7 +253,7 @@ async function handleVectorDelete() {
   hideContextMenu()
   try {
     const res = await window.api.vectorDeleteFile(
-      searchCfg(),
+      raftCfg(),
       settings.grpcHost,
       settings.grpcPort,
       settings.vectorIndexName,
