@@ -28,8 +28,13 @@ function createClient(config) {
     }
   });
 }
-function isMarkdownKey(key) {
-  return /\.(md|markdown|mdown)$/i.test(key);
+function detectFileType$1(key) {
+  const lower = key.toLowerCase();
+  if (/\.(md|markdown|mdown|mdx)$/.test(lower)) return "markdown";
+  if (/\.ya?ml$/.test(lower)) return "yaml";
+  if (/\.html?$/.test(lower)) return "html";
+  if (/\.j2$/.test(lower)) return "jinja";
+  return null;
 }
 function safeDecodeKey(key) {
   try {
@@ -68,15 +73,17 @@ function registerS3Handlers() {
           })
         );
         const folders = (res.CommonPrefixes || []).map((cp) => safeDecodeKey(cp.Prefix || "")).filter(Boolean);
-        const files = (res.Contents || []).filter((o) => o.Key && o.Key !== prefix).filter((o) => isMarkdownKey(o.Key)).map((o) => {
+        const files = (res.Contents || []).filter((o) => o.Key && o.Key !== prefix).filter((o) => detectFileType$1(o.Key) !== null).map((o) => {
           const key = safeDecodeKey(o.Key);
+          const fileType = detectFileType$1(key);
           return {
             key,
             name: key.split("/").pop() || "",
             size: o.Size || 0,
             lastModified: o.LastModified ? o.LastModified.toISOString() : null,
             eTag: o.ETag,
-            isMarkdown: true
+            isMarkdown: fileType === "markdown",
+            fileType
           };
         });
         return { folders, files };
@@ -1867,7 +1874,7 @@ async function deleteVectorId(raft, client, indexName, id) {
     break;
   }
 }
-async function refreshAfterSave(raft, kind, filePath, config, bucket, key, fulltext, vector) {
+async function refreshAfterSave(raft, kind, filePath, config, bucket, key, fulltext, vector, force = false) {
   try {
     const content = kind === "s3" ? await fetchS3Content(config, bucket, key) : fs.readFileSync(filePath, "utf8");
     if (!content.trim()) return { ok: true, message: "" };
@@ -1910,14 +1917,17 @@ async function refreshAfterSave(raft, kind, filePath, config, bucket, key, fullt
     const staleRows = mdHits.filter((h) => h.rowId !== currentRowId).map((h) => h.rowId);
     const brokenFulltext = !!current && current.has_fulltext === "1" && !/^\d+$/.test(current.row_id);
     const brokenVector = !!current && current.has_vector === "1" && !current.chunk_ids.length;
-    if (!staleRaft.length && !staleRows.length && !brokenFulltext && !brokenVector) {
+    const hasAnyIndex = !!current && (current.has_fulltext === "1" || current.has_vector === "1" || !!current.row_id) || staleRaft.length > 0 || staleRows.length > 0 || mdHits.length > 0;
+    if (force) {
+      if (!hasAnyIndex) return { ok: true, message: "" };
+    } else if (!staleRaft.length && !staleRows.length && !brokenFulltext && !brokenVector) {
       return { ok: true, message: "" };
     }
-    const wantFulltext = staleRows.length > 0 || brokenFulltext || staleRaft.some((e) => e.meta.has_fulltext === "1");
+    const wantFulltext = force ? !!current && current.has_fulltext === "1" || staleRows.length > 0 || mdHits.length > 0 || staleRaft.some((e) => e.meta.has_fulltext === "1") : staleRows.length > 0 || brokenFulltext || staleRaft.some((e) => e.meta.has_fulltext === "1");
     const staleChunks = /* @__PURE__ */ new Set();
     for (const e of staleRaft) for (const id of e.meta.chunk_ids) staleChunks.add(id);
     for (const h of mdHits) if (h.rowId !== currentRowId) for (const id of h.chunkIds) staleChunks.add(id);
-    const wantVector = staleChunks.size > 0 || brokenVector || staleRaft.some((e) => e.meta.has_vector === "1");
+    const wantVector = force ? !!current && current.has_vector === "1" || staleChunks.size > 0 || mdHits.some((h) => h.hasVector) || staleRaft.some((e) => e.meta.has_vector === "1") : staleChunks.size > 0 || brokenVector || staleRaft.some((e) => e.meta.has_vector === "1");
     for (const rowId of Array.from(new Set(staleRows))) {
       if (!ftClient || !fulltext || !/^\d+$/.test(rowId)) continue;
       try {
@@ -2268,12 +2278,41 @@ function registerVectorIndexHandlers() {
   );
   electron.ipcMain.handle(
     "index:refreshAfterSave",
-    async (_e, raft, kind, filePath, config, bucket, key, fulltext, vector) => {
-      return refreshAfterSave(raft, kind, filePath, config, bucket, key, fulltext, vector);
+    async (_e, raft, kind, filePath, config, bucket, key, fulltext, vector, force) => {
+      return refreshAfterSave(raft, kind, filePath, config, bucket, key, fulltext, vector, !!force);
     }
   );
 }
 const VERSION_NOTES = [
+  {
+    version: "1.0.13",
+    date: "2026-10-27",
+    title: "多格式支持与 CodeMirror 编辑引擎",
+    changes: [
+      "新增 CodeMirror 6 编辑内核：编辑区支持 Markdown（GFM）/ YAML / HTML / Jinja2 语法高亮，可在全局设置中一键切回原生文本编辑框",
+      "查找高亮、编辑与预览滚动同步、视图切换光标保持、工具栏插入与大纲跳转同时适配两种编辑内核",
+      "新增 YAML / YML 文件支持：本地与 S3 均可打开、编辑，预览为 Shiki 只读语法高亮",
+      "新增 HTML / HTM 文件支持：本地与 S3 均可打开、编辑，预览以沙箱浏览器方式渲染",
+      "新增 Jinja2（.j2）模板支持：预览为 Shiki 语法高亮",
+      "索引服务仅支持 Markdown：YAML / HTML / Jinja2 的索引菜单不可用，索引状态检测与保存后重建自动跳过",
+      "文件树新增文件名搜索：输入即搜（防抖），下拉展示匹配文件，Esc 收起下拉并保留输入",
+      "修复上次打开目录偶尔丢失的问题：目录记忆改为写入用户数据目录的配置文件，异常退出后仍可恢复"
+    ]
+  },
+  {
+    version: "1.0.6",
+    date: "2026-10-26",
+    title: "索引状态迁移与右键菜单增强",
+    changes: [
+      "索引状态改由 Raft KV 保存：key 为 INDEX + \\0 + 文件 BLAKE3，value 含是否全文索引、是否向量索引、全文索引 doc_id/row_id 与全部向量 chunk ID",
+      "全文索引表升级到 v4：只保留文档基础字段，不再保存 BLAKE3、索引状态与 chunk 片段；字段结构变更时自动清空重建并同步重置索引状态",
+      "移除「索引结构变更时重建」开关，结构升级改为自动处理，避免状态与实际数据不一致",
+      "新增保存后异步重建索引：仅对已建立索引的文件删除旧索引并按原有标识重新生成，完成后弹出结果提示",
+      "索引重建完成后文件树与 S3 列表的「全文」「向量」标签自动刷新",
+      "本地文件树与 S3 右键菜单新增：生成全文&向量索引、重新索引、删除全文索引、删除全文和向量索引",
+      "「重新索引」只更新已有索引，原本没有索引的文件或对象不会新增索引"
+    ]
+  },
   {
     version: "1.0.5",
     date: "2026-10-20",
@@ -2494,8 +2533,16 @@ function closeSplash() {
         splashWindow.close();
         splashWindow = null;
       }
-    }, 250);
+    }, 120);
   }
+}
+function detectFileType(fileName) {
+  const lower = fileName.toLowerCase();
+  if (/\.(md|markdown|mdown|mdx)$/.test(lower)) return "markdown";
+  if (/\.ya?ml$/.test(lower)) return "yaml";
+  if (/\.html?$/.test(lower)) return "html";
+  if (/\.j2$/.test(lower)) return "jinja";
+  return null;
 }
 function ensureMdExtension(filePath) {
   const ext = path.extname(filePath).toLowerCase();
@@ -2524,7 +2571,16 @@ function createWindow() {
     setTimeout(() => {
       mainWindow?.show();
       updateSplashProgress(100);
-    }, 300);
+    }, 80);
+  });
+  mainWindow.webContents.on("did-start-loading", () => {
+    updateSplashProgress(55, "加载界面资源...");
+  });
+  mainWindow.webContents.on("dom-ready", () => {
+    updateSplashProgress(80, "渲染界面...");
+  });
+  mainWindow.webContents.on("did-finish-load", () => {
+    updateSplashProgress(92, "即将完成...");
   });
   mainWindow.on("maximize", () => {
     mainWindow?.webContents.send("window:maximized-changed", true);
@@ -2669,6 +2725,9 @@ electron.ipcMain.handle("dialog:openFile", async () => {
     properties: ["openFile"],
     filters: [
       { name: "Markdown", extensions: ["md", "markdown", "mdown", "mdx"] },
+      { name: "YAML", extensions: ["yml", "yaml"] },
+      { name: "HTML", extensions: ["html", "htm"] },
+      { name: "Jinja2", extensions: ["j2"] },
       { name: "所有文件", extensions: ["*"] }
     ]
   });
@@ -2819,14 +2878,14 @@ electron.ipcMain.handle("filetree:readDir", async (_event, dirPath) => {
       const fullPath = path.join(dirPath, entry);
       const stats = fs.statSync(fullPath);
       const isDir = stats.isDirectory();
-      const ext = entry.toLowerCase();
-      const isMarkdownFile = !isDir && [".md", ".markdown", ".mdown"].some((e) => ext.endsWith(e));
-      if (isDir || isMarkdownFile) {
+      const fileType = isDir ? null : detectFileType(entry);
+      if (isDir || fileType) {
         result.push({
           name: entry,
           path: fullPath,
           isDirectory: isDir,
-          isMarkdown: isMarkdownFile
+          isMarkdown: fileType === "markdown",
+          fileType
         });
       }
     }
@@ -2839,6 +2898,71 @@ electron.ipcMain.handle("filetree:readDir", async (_event, dirPath) => {
     return result;
   } catch {
     return [];
+  }
+});
+electron.ipcMain.handle("filetree:searchFiles", async (_event, rootPath, keyword) => {
+  const q = (keyword || "").trim().toLowerCase();
+  if (!rootPath || !q) return [];
+  const MAX_RESULTS = 200;
+  const SKIP_DIRS = /* @__PURE__ */ new Set(["node_modules", ".git", "dist", "out", "release"]);
+  const results = [];
+  const walk = (dir, rel) => {
+    if (results.length >= MAX_RESULTS) return;
+    let entries;
+    try {
+      entries = fs.readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (results.length >= MAX_RESULTS) return;
+      if (entry.startsWith(".")) continue;
+      const fullPath = path.join(dir, entry);
+      const relPath = rel ? `${rel}/${entry}` : entry;
+      let stats;
+      try {
+        stats = fs.statSync(fullPath);
+      } catch {
+        continue;
+      }
+      if (stats.isDirectory()) {
+        if (!SKIP_DIRS.has(entry)) walk(fullPath, relPath);
+        continue;
+      }
+      const lower = entry.toLowerCase();
+      if (detectFileType(entry) && lower.includes(q)) {
+        results.push({ name: entry, path: fullPath, relativePath: relPath });
+      }
+    }
+  };
+  walk(rootPath, "");
+  results.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  return results;
+});
+function appStatePath() {
+  return path.join(electron.app.getPath("userData"), "app-state.json");
+}
+function readAppState() {
+  try {
+    const raw = fs.readFileSync(appStatePath(), "utf-8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+electron.ipcMain.handle("appState:get", (_event, key) => {
+  const value = readAppState()[key];
+  return typeof value === "string" ? value : null;
+});
+electron.ipcMain.handle("appState:set", (_event, key, value) => {
+  try {
+    const state = readAppState();
+    state[key] = value;
+    fs.writeFileSync(appStatePath(), JSON.stringify(state), "utf-8");
+    return true;
+  } catch {
+    return false;
   }
 });
 electron.ipcMain.handle("filetree:openDirectory", async () => {
@@ -2951,8 +3075,8 @@ electron.app.whenReady().then(() => {
     registerS3Handlers();
     registerIndexSearchHandlers();
     registerVectorIndexHandlers();
-    updateSplashProgress(65, "初始化服务...");
-  }, 200);
+    updateSplashProgress(50, "初始化服务...");
+  }, 50);
   electron.app.on("activate", () => {
     if (electron.BrowserWindow.getAllWindows().length === 0) {
       createWindow();

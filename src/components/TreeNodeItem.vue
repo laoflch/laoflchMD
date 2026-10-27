@@ -146,7 +146,7 @@ defineExpose({ startRename })
       :class="{
         'is-directory': entry.isDirectory,
         'is-selected': isSelected,
-        'is-md-file': entry.isMarkdown && !entry.isDirectory
+        'is-md-file': entry.fileType !== null && !entry.isDirectory
       }"
       :style="{ paddingLeft: `${12 + depth * 16}px` }"
       @click="handleClick"
@@ -171,6 +171,10 @@ defineExpose({ startRename })
         <svg v-else-if="entry.isMarkdown" width="16" height="16" viewBox="0 0 16 16" fill="#569cd6">
           <path d="M2 2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2zm2-1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H4z"/>
           <path d="M6.5 11.5v-5l-1.5 1.5V6l3-3 3 3v2l-1.5-1.5v5h-3z"/>
+        </svg>
+        <!-- YAML / HTML / Jinja2 file icon -->
+        <svg v-else-if="entry.fileType" width="16" height="16" viewBox="0 0 16 16" fill="#569cd6">
+          <path d="M2 2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2zm2-1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H4z"/>
         </svg>
         <!-- Other file icon -->
         <svg v-else width="16" height="16" viewBox="0 0 16 16" fill="#999">

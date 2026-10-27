@@ -13,6 +13,7 @@ const emit = defineEmits<{
 const settings = useSettingsStore()
 
 // 本地草稿，取消时丢弃，保存时才写入 store
+const draftUseCodeMirror = ref(true)
 const draftProtocol = ref<IndexProtocol>('rest')
 const draftGrpcHost = ref('')
 const draftGrpcPort = ref('')
@@ -40,6 +41,7 @@ watch(
   () => props.open,
   (open) => {
     if (open) {
+      draftUseCodeMirror.value = settings.useCodeMirror
       draftProtocol.value = settings.indexProtocol
       draftGrpcHost.value = settings.grpcHost
       draftGrpcPort.value = settings.grpcPort
@@ -135,6 +137,7 @@ function save() {
     }
   }
 
+  settings.useCodeMirror = draftUseCodeMirror.value
   settings.indexProtocol = draftProtocol.value
   settings.grpcHost = draftGrpcHost.value.trim()
   settings.grpcPort = draftGrpcPort.value.trim()
@@ -172,6 +175,19 @@ function cancel() {
       </div>
 
       <div class="settings-body">
+        <div class="settings-section-title">编辑器</div>
+
+        <div class="settings-field">
+          <div class="field-row">
+            <div class="field-label">使用 CodeMirror 编辑器</div>
+            <label class="switch" :class="{ on: draftUseCodeMirror }">
+              <input v-model="draftUseCodeMirror" type="checkbox" />
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+          <p class="field-hint">开启后编辑区使用 CodeMirror（带语法高亮）；关闭则回退到原来的纯文本编辑框</p>
+        </div>
+
         <div class="settings-section-title">索引配置</div>
 
         <div class="settings-field">

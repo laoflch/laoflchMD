@@ -22,6 +22,12 @@ declare global {
       // File tree operations
       readFile: (filePath: string) => Promise<string | null>
       readDir: (dirPath: string) => Promise<FileEntry[]>
+      searchFiles: (
+        rootPath: string,
+        keyword: string
+      ) => Promise<Array<{ name: string; path: string; relativePath: string }>>
+      getAppState: (key: string) => Promise<string | null>
+      setAppState: (key: string, value: string) => Promise<boolean>
       openDirectory: () => Promise<string | null>
       getFileDir: (filePath: string) => Promise<string | null>
       newFile: (dirPath: string) => Promise<{ name: string; path: string } | null>
@@ -146,7 +152,8 @@ declare global {
           chunkSize?: number
           overlap?: number
           regenerate: boolean
-        } | null
+        } | null,
+        force?: boolean
       ) => Promise<{ ok: boolean; message: string }>
       onIndexProgress: (
         callback: (progress: IndexProgress) => void
@@ -229,6 +236,8 @@ export interface FileEntry {
   path: string
   isDirectory: boolean
   isMarkdown: boolean
+  /** 可预览/编辑的类型；目录为 null */
+  fileType: 'markdown' | 'yaml' | 'html' | 'jinja' | null
 }
 
 export interface S3Config {
@@ -250,6 +259,8 @@ export interface S3ObjectEntry {
   lastModified: string | null
   eTag?: string
   isMarkdown: boolean
+  /** 可预览/编辑的类型 */
+  fileType: 'markdown' | 'yaml' | 'html' | 'jinja' | null
 }
 
 export interface VersionNote {

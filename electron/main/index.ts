@@ -149,8 +149,20 @@ function closeSplash(): void {
         splashWindow.close()
         splashWindow = null
       }
-    }, 250)
+    }, 120)
   }
+}
+
+// 支持预览/编辑的文件类型：Markdown、YAML、HTML、Jinja2 模板
+type PreviewFileType = 'markdown' | 'yaml' | 'html' | 'jinja'
+
+function detectFileType(fileName: string): PreviewFileType | null {
+  const lower = fileName.toLowerCase()
+  if (/\.(md|markdown|mdown|mdx)$/.test(lower)) return 'markdown'
+  if (/\.ya?ml$/.test(lower)) return 'yaml'
+  if (/\.html?$/.test(lower)) return 'html'
+  if (/\.j2$/.test(lower)) return 'jinja'
+  return null
 }
 
 // 若文件名无 .md 后缀则自动补上（仅在没有扩展名或扩展名不是常见 markdown 后缀时）
@@ -185,7 +197,18 @@ function createWindow(): void {
     setTimeout(() => {
       mainWindow?.show()
       updateSplashProgress(100)
-    }, 300)
+    }, 80)
+  })
+
+  // 加载阶段反馈：让闪屏进度在最后一段持续推进，而不是停在 65%
+  mainWindow.webContents.on('did-start-loading', () => {
+    updateSplashProgress(55, '加载界面资源...')
+  })
+  mainWindow.webContents.on('dom-ready', () => {
+    updateSplashProgress(80, '渲染界面...')
+  })
+  mainWindow.webContents.on('did-finish-load', () => {
+    updateSplashProgress(92, '即将完成...')
   })
 
   mainWindow.on('maximize', () => {
@@ -347,6 +370,9 @@ ipcMain.handle('dialog:openFile', async () => {
     properties: ['openFile'],
     filters: [
       { name: 'Markdown', extensions: ['md', 'markdown', 'mdown', 'mdx'] },
+      { name: 'YAML', extensions: ['yml', 'yaml'] },
+      { name: 'HTML', extensions: ['html', 'htm'] },
+      { name: 'Jinja2', extensions: ['j2'] },
       { name: '所有文件', extensions: ['*'] }
     ]
   })
@@ -527,7 +553,13 @@ ipcMain.handle('filetree:readFile', async (_event, filePath: string) => {
 ipcMain.handle('filetree:readDir', async (_event, dirPath: string) => {
   try {
     const entries = readdirSync(dirPath)
-    const result: Array<{ name: string; path: string; isDirectory: boolean; isMarkdown: boolean }> = []
+    const result: Array<{
+      name: string
+      path: string
+      isDirectory: boolean
+      isMarkdown: boolean
+      fileType: PreviewFileType | null
+    }> = []
 
     for (const entry of entries) {
       // Skip hidden files/directories
@@ -536,16 +568,16 @@ ipcMain.handle('filetree:readDir', async (_event, dirPath: string) => {
       const fullPath = join(dirPath, entry)
       const stats = statSync(fullPath)
       const isDir = stats.isDirectory()
-      const ext = entry.toLowerCase()
-      const isMarkdownFile = !isDir && ['.md', '.markdown', '.mdown'].some(e => ext.endsWith(e))
+      const fileType = isDir ? null : detectFileType(entry)
 
-      // Only show directories and markdown files
-      if (isDir || isMarkdownFile) {
+      // Only show directories and supported (Markdown / YAML / HTML) files
+      if (isDir || fileType) {
         result.push({
           name: entry,
           path: fullPath,
           isDirectory: isDir,
-          isMarkdown: isMarkdownFile
+          isMarkdown: fileType === 'markdown',
+          fileType
         })
       }
     }
@@ -561,6 +593,81 @@ ipcMain.handle('filetree:readDir', async (_event, dirPath: string) => {
     return result
   } catch {
     return []
+  }
+})
+
+// 文件树搜索：在指定目录及子目录中按文件名包含匹配支持的文件（Markdown / YAML / HTML）
+ipcMain.handle('filetree:searchFiles', async (_event, rootPath: string, keyword: string) => {
+  const q = (keyword || '').trim().toLowerCase()
+  if (!rootPath || !q) return []
+
+  const MAX_RESULTS = 200
+  const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'out', 'release'])
+  const results: Array<{ name: string; path: string; relativePath: string }> = []
+
+  const walk = (dir: string, rel: string) => {
+    if (results.length >= MAX_RESULTS) return
+    let entries: string[]
+    try {
+      entries = readdirSync(dir)
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (results.length >= MAX_RESULTS) return
+      if (entry.startsWith('.')) continue
+      const fullPath = join(dir, entry)
+      const relPath = rel ? `${rel}/${entry}` : entry
+      let stats
+      try {
+        stats = statSync(fullPath)
+      } catch {
+        continue
+      }
+      if (stats.isDirectory()) {
+        if (!SKIP_DIRS.has(entry)) walk(fullPath, relPath)
+        continue
+      }
+      const lower = entry.toLowerCase()
+      if (detectFileType(entry) && lower.includes(q)) {
+        results.push({ name: entry, path: fullPath, relativePath: relPath })
+      }
+    }
+  }
+
+  walk(rootPath, '')
+  results.sort((a, b) => a.relativePath.localeCompare(b.relativePath))
+  return results
+})
+
+// 应用级简单状态持久化（如上次打开的目录）：写入 userData/app-state.json，避免 localStorage 延迟落盘导致丢失
+function appStatePath(): string {
+  return join(app.getPath('userData'), 'app-state.json')
+}
+
+function readAppState(): Record<string, string> {
+  try {
+    const raw = readFileSync(appStatePath(), 'utf-8')
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, string>) : {}
+  } catch {
+    return {}
+  }
+}
+
+ipcMain.handle('appState:get', (_event, key: string) => {
+  const value = readAppState()[key]
+  return typeof value === 'string' ? value : null
+})
+
+ipcMain.handle('appState:set', (_event, key: string, value: string) => {
+  try {
+    const state = readAppState()
+    state[key] = value
+    writeFileSync(appStatePath(), JSON.stringify(state), 'utf-8')
+    return true
+  } catch {
+    return false
   }
 })
 
@@ -686,15 +793,15 @@ app.whenReady().then(() => {
   createSplashWindow()
   updateSplashProgress(15, '正在启动应用...')
 
-  // 等闪屏渲染出来后再创建主窗口（主窗口较重，避免抢占资源导致闪屏卡）
+  // 让闪屏先绘制，再创建主窗口（主窗口较重，避免抢占资源导致闪屏卡）
   setTimeout(() => {
     updateSplashProgress(30, '加载编辑器组件...')
     createWindow()
     registerS3Handlers()
     registerIndexSearchHandlers()
     registerVectorIndexHandlers()
-    updateSplashProgress(65, '初始化服务...')
-  }, 200)
+    updateSplashProgress(50, '初始化服务...')
+  }, 50)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

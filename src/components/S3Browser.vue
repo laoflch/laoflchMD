@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { useS3Store } from '../stores/s3'
 import { useEditorStore } from '../stores/editor'
 import { useSettingsStore } from '../stores/settings'
@@ -68,7 +68,6 @@ async function checkIndexed(keys: string[]) {
 const fulltextOff = computed(() => !settings.indexEnabled || !settings.fulltextEnabled)
 // 向量索引功能是否关闭（索引服务总开关 / 向量文本索引子开关）
 const vectorOff = computed(() => !settings.indexEnabled || !settings.vectorTextEnabled)
-
 // 文件列表变化时重新检测索引状态
 watch(
   () => s3.files,
@@ -151,16 +150,35 @@ function onIndexInfoDeleted() {
 
 // 右键菜单
 const contextMenu = ref({ show: false, x: 0, y: 0 })
+// 右键菜单根元素：用于测量高度，底部超出可视区时整体上移
+const contextMenuEl = ref<HTMLElement | null>(null)
 const currentFile = ref<S3ObjectEntry | null>(null)
 const showDetailsDialog = ref(false)
 
-function showContextMenu(e: MouseEvent, file: S3ObjectEntry) {
+async function showContextMenu(e: MouseEvent, file: S3ObjectEntry) {
   currentFile.value = file
   contextMenu.value = { show: true, x: e.clientX, y: e.clientY }
+  await nextTick()
+  const el = contextMenuEl.value
+  if (!el) return
+  const margin = 8
+  const maxTop = window.innerHeight - el.offsetHeight - margin
+  if (contextMenu.value.y > maxTop) {
+    contextMenu.value = { ...contextMenu.value, y: Math.max(margin, maxTop) }
+  }
 }
 
 function hideContextMenu() {
   contextMenu.value.show = false
+}
+
+// 当前右键目标为 YAML / HTML 文件：索引相关菜单禁用（索引服务暂只支持 Markdown）
+const indexTargetUnsupported = computed(() => !!currentFile.value && !currentFile.value.isMarkdown)
+
+function indexUnsupported(): boolean {
+  if (currentFile.value?.isMarkdown) return false
+  toastStore.pushToast('err', '索引服务暂只支持 Markdown 文件')
+  return true
 }
 
 function showFileDetails() {
@@ -174,6 +192,7 @@ const indexing = ref(false)
 async function handleIndex() {
   if (!currentFile.value || !s3.currentBucket) return
   hideContextMenu()
+  if (indexUnsupported()) return
   // 索引服务关闭时禁用全文索引功能
   if (!settings.indexEnabled || !settings.fulltextEnabled) {
     toastStore.pushToast(
@@ -217,6 +236,7 @@ const vectorIndexing = ref(false)
 async function handleVectorIndex() {
   if (!currentFile.value || !s3.currentBucket) return
   hideContextMenu()
+  if (indexUnsupported()) return
   // 索引服务关闭时禁用向量索引功能
   if (!settings.indexEnabled || !settings.vectorTextEnabled) {
     toastStore.pushToast(
@@ -257,6 +277,7 @@ async function handleVectorIndex() {
 async function handleVectorDelete() {
   if (!currentFile.value || !s3.currentBucket) return
   hideContextMenu()
+  if (indexUnsupported()) return
   try {
     const res = await window.api.vectorDeleteFile(
       raftCfg(),
@@ -277,6 +298,173 @@ async function handleVectorDelete() {
     }
   } catch (e: unknown) {
     toastStore.pushToast('err', e instanceof Error ? e.message : '删除向量索引失败')
+  }
+}
+
+// ———————— 组合索引操作（全文 / 向量 / 重新索引） ————————
+
+function fulltextCfg() {
+  const protocol = settings.indexProtocol
+  return {
+    protocol,
+    host: protocol === 'grpc' ? settings.grpcHost : settings.restHost,
+    port: protocol === 'grpc' ? settings.grpcPort : settings.restPort,
+    indexName: settings.indexName
+  }
+}
+
+function vectorCfg() {
+  return {
+    host: settings.grpcHost,
+    port: settings.grpcPort,
+    indexName: settings.vectorIndexName,
+    modelName: settings.vectorModelName,
+    chunkSize: settings.vectorChunkSize,
+    overlap: settings.vectorChunkOverlap
+  }
+}
+
+/** 删除单个 S3 对象的全文索引；无索引视为已达成目标 */
+async function deleteFulltextOf(key: string): Promise<boolean> {
+  const ft = fulltextCfg()
+  try {
+    const doc = await window.api.indexGetDoc('s3', '', s3.plainConfig(), s3.currentBucket!, key, raftCfg())
+    if (!doc.ok || !doc.doc) return true
+    const id = String(doc.doc.docId ?? '')
+    if (!/^\d+$/.test(id)) return true
+    const res = await window.api.indexDeleteDoc(
+      ft.protocol,
+      ft.host,
+      ft.port,
+      ft.indexName,
+      id,
+      { ...doc.doc.fields },
+      raftCfg()
+    )
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+/** 删除单个 S3 对象的向量索引；无索引时保持静默 */
+async function deleteVectorOf(key: string): Promise<boolean> {
+  const v = vectorCfg()
+  try {
+    await window.api.vectorDeleteFile(
+      raftCfg(),
+      v.host,
+      v.port,
+      v.indexName,
+      's3',
+      key,
+      s3.plainConfig(),
+      s3.currentBucket!,
+      key
+    )
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 生成全文 & 向量索引（依次执行，沿用各自子开关） */
+async function handleIndexBoth() {
+  if (!currentFile.value || !s3.currentBucket) return
+  if (indexUnsupported()) {
+    hideContextMenu()
+    return
+  }
+  await handleIndex()
+  await handleVectorIndex()
+}
+
+/** 删除当前对象的全文索引 */
+async function handleFulltextDelete() {
+  if (!currentFile.value || !s3.currentBucket) return
+  hideContextMenu()
+  if (indexUnsupported()) return
+  if (!settings.indexEnabled || !settings.fulltextEnabled) {
+    toastStore.pushToast(
+      'err',
+      settings.indexEnabled ? '全文索引服务已关闭，请在全局设置中启用' : '索引服务已关闭，请在全局设置中启用'
+    )
+    return
+  }
+  const key = currentFile.value.key
+  try {
+    const ok = await deleteFulltextOf(key)
+    toastStore.pushToast(ok ? 'ok' : 'err', ok ? '已删除全文索引' : '删除全文索引失败')
+    if (ok) {
+      const next = new Set(indexedKeys.value)
+      next.delete(key)
+      indexedKeys.value = next
+      checkIndexed(s3.files.filter((f) => f.isMarkdown).map((f) => f.key))
+    }
+  } catch (e: unknown) {
+    toastStore.pushToast('err', e instanceof Error ? e.message : '删除全文索引失败')
+  }
+}
+
+/** 删除当前对象的全文和向量索引 */
+async function handleAllDelete() {
+  if (!currentFile.value || !s3.currentBucket) return
+  hideContextMenu()
+  if (indexUnsupported()) return
+  if (!settings.indexEnabled) {
+    toastStore.pushToast('err', '索引服务已关闭，请在全局设置中启用')
+    return
+  }
+  const key = currentFile.value.key
+  try {
+    const okFt = await deleteFulltextOf(key)
+    const okVec = await deleteVectorOf(key)
+    const ok = okFt && okVec
+    toastStore.pushToast(ok ? 'ok' : 'err', ok ? '已删除全文和向量索引' : '删除索引失败')
+    if (ok) {
+      const nextFt = new Set(indexedKeys.value)
+      nextFt.delete(key)
+      indexedKeys.value = nextFt
+      const nextVec = new Set(vectorIndexedKeys.value)
+      nextVec.delete(key)
+      vectorIndexedKeys.value = nextVec
+      checkIndexed(s3.files.filter((f) => f.isMarkdown).map((f) => f.key))
+    }
+  } catch (e: unknown) {
+    toastStore.pushToast('err', e instanceof Error ? e.message : '删除索引失败')
+  }
+}
+
+/** 重新索引：仅更新已有索引，原本没有索引的对象不新增 */
+async function handleReindex() {
+  if (!currentFile.value || !s3.currentBucket) return
+  hideContextMenu()
+  if (indexUnsupported()) return
+  if (!settings.indexEnabled) {
+    toastStore.pushToast('err', '索引服务已关闭，请在全局设置中启用')
+    return
+  }
+  const key = currentFile.value.key
+  try {
+    const res = await window.api.indexRefreshAfterSave(
+      raftCfg(),
+      's3',
+      key,
+      s3.plainConfig(),
+      s3.currentBucket,
+      key,
+      { ...fulltextCfg(), regenerate: settings.fulltextEnabled },
+      { ...vectorCfg(), regenerate: settings.vectorTextEnabled },
+      true
+    )
+    if (!res?.ok) {
+      toastStore.pushToast('err', res?.message || '重新索引失败')
+      return
+    }
+    toastStore.pushToast('ok', res.message || '该对象没有索引，已跳过')
+    checkIndexed(s3.files.filter((f) => f.isMarkdown).map((f) => f.key))
+  } catch (e: unknown) {
+    toastStore.pushToast('err', e instanceof Error ? e.message : '重新索引失败')
   }
 }
 
@@ -304,9 +492,9 @@ function formatSize(bytes: number | undefined): string {
 // 点击其他地方关闭右键菜单
 document.addEventListener('click', hideContextMenu)
 
-// 打开对象到编辑器（Markdown 文本）
+// 打开对象到编辑器（Markdown / YAML / HTML 文本）
 async function openObject(entry: S3ObjectEntry) {
-  if (!entry.isMarkdown) return
+  if (!entry.fileType) return
   const content = await s3.getObject(entry)
   if (content !== null) {
     editor.loadFile(content, entry.key, { bucket: s3.currentBucket!, key: entry.key })
@@ -450,12 +638,12 @@ async function doSave() {
               v-for="file in s3.files"
               :key="file.key"
               class="s3-item"
-              :class="{ 's3-item-file': !file.isMarkdown, 's3-item-openable': file.isMarkdown }"
+              :class="{ 's3-item-file': !file.fileType, 's3-item-openable': !!file.fileType }"
               :title="file.key"
-              @click="file.isMarkdown && openObject(file)"
+              @click="file.fileType && openObject(file)"
               @contextmenu.prevent="showContextMenu($event, file)"
             >
-              <svg v-if="file.isMarkdown" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+              <svg v-if="file.fileType" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/>
                 <path d="M14 2v6h6"/>
               </svg>
@@ -493,6 +681,7 @@ async function doSave() {
     <!-- 右键菜单 -->
     <div
       v-if="contextMenu.show"
+      ref="contextMenuEl"
       class="s3-context-menu"
       :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
     >
@@ -502,13 +691,13 @@ async function doSave() {
         </svg>
         显示详情
       </div>
-      <div class="s3-context-menu-item" :class="{ disabled: indexing || fulltextOff }" @click="handleIndex">
+      <div class="s3-context-menu-item" :class="{ disabled: indexing || fulltextOff || indexTargetUnsupported }" @click="handleIndex">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 4v16M5 12h14"/>
         </svg>
         生成全文索引
       </div>
-      <div class="s3-context-menu-item" :class="{ disabled: vectorIndexing || vectorOff }" @click="handleVectorIndex">
+      <div class="s3-context-menu-item" :class="{ disabled: vectorIndexing || vectorOff || indexTargetUnsupported }" @click="handleVectorIndex">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="6.5" cy="7.5" r="2.4"/>
           <circle cx="17" cy="6" r="2.4"/>
@@ -517,11 +706,49 @@ async function doSave() {
         </svg>
         生成向量索引
       </div>
-      <div class="s3-context-menu-item" :class="{ disabled: vectorOff }" @click="handleVectorDelete">
+      <div
+        class="s3-context-menu-item"
+        :class="{ disabled: indexing || vectorIndexing || fulltextOff || vectorOff || indexTargetUnsupported }"
+        @click="handleIndexBoth"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3v9M7.5 7.5h9"/>
+          <circle cx="6" cy="18" r="2"/>
+          <circle cx="12" cy="18" r="2"/>
+          <circle cx="18" cy="18" r="2"/>
+        </svg>
+        生成全文&向量索引
+      </div>
+      <div class="s3-context-menu-item" :class="{ disabled: indexing || vectorIndexing || indexTargetUnsupported }" @click="handleReindex">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20 12a8 8 0 1 1-2.4-5.6"/>
+          <path d="M20 3v4h-4"/>
+        </svg>
+        重新索引
+      </div>
+      <div class="s3-context-menu-divider"></div>
+      <div class="s3-context-menu-item" :class="{ disabled: indexing || fulltextOff || indexTargetUnsupported }" @click="handleFulltextDelete">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 3h6M4 6h16M8 6l1 14h6l1-14"/>
+        </svg>
+        删除全文索引
+      </div>
+      <div class="s3-context-menu-item" :class="{ disabled: vectorOff || indexTargetUnsupported }" @click="handleVectorDelete">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
           <path d="M9 3h6M4 6h16M8 6l1 14h6l1-14M10 10v6M14 10v6"/>
         </svg>
         删除向量索引
+      </div>
+      <div
+        class="s3-context-menu-item"
+        :class="{ disabled: fulltextOff || vectorOff || indexTargetUnsupported }"
+        @click="handleAllDelete"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 3h6M4 6h16M8 6l1 14h6l1-14"/>
+          <path d="M15 13l3 3M18 13l-3 3"/>
+        </svg>
+        删除全文和向量索引
       </div>
       <div class="s3-context-menu-divider"></div>
       <div class="s3-context-menu-item danger" @click="deleteFile">

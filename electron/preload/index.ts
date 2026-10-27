@@ -29,6 +29,10 @@ contextBridge.exposeInMainWorld('api', {
   // File tree operations
   readFile: (filePath: string) => ipcRenderer.invoke('filetree:readFile', filePath),
   readDir: (dirPath: string) => ipcRenderer.invoke('filetree:readDir', dirPath),
+  searchFiles: (rootPath: string, keyword: string) =>
+    ipcRenderer.invoke('filetree:searchFiles', rootPath, keyword),
+  getAppState: (key: string) => ipcRenderer.invoke('appState:get', key),
+  setAppState: (key: string, value: string) => ipcRenderer.invoke('appState:set', key, value),
   openDirectory: () => ipcRenderer.invoke('filetree:openDirectory'),
   getFileDir: (filePath: string) => ipcRenderer.invoke('filetree:getFileDir', filePath),
   newFile: (dirPath: string) => ipcRenderer.invoke('filetree:newFile', dirPath),
@@ -171,7 +175,8 @@ contextBridge.exposeInMainWorld('api', {
       chunkSize?: number
       overlap?: number
       regenerate: boolean
-    } | null
+    } | null,
+    force?: boolean
   ) =>
     ipcRenderer.invoke(
       'index:refreshAfterSave',
@@ -182,7 +187,8 @@ contextBridge.exposeInMainWorld('api', {
       bucket,
       key,
       fulltext,
-      vector
+      vector,
+      force
     ),
   // 目录建索引进度事件（主进程逐文件推送）
   onIndexProgress: (callback: (progress: { done: number; total: number; fileName: string }) => void) => {

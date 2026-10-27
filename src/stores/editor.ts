@@ -33,6 +33,7 @@ const langImporters: Record<string, () => Promise<any>> = {
   php: () => import('@shikijs/langs/php'),
   sql: () => import('@shikijs/langs/sql'),
   yaml: () => import('@shikijs/langs/yaml'),
+  jinja: () => import('@shikijs/langs/jinja'),
   dockerfile: () => import('@shikijs/langs/dockerfile'),
   diff: () => import('@shikijs/langs/diff'),
   kotlin: () => import('@shikijs/langs/kotlin'),
@@ -315,6 +316,17 @@ function hello() {
   const filePath = ref<string | null>(null)
   // S3 源信息：当当前文件来自 S3 时记录，用于保存回 S3（而非写入本地相对路径）
   const s3Source = ref<{ bucket: string; key: string } | null>(null)
+
+  // 当前文件类型：由扩展名决定（Markdown / YAML / HTML / Jinja2），无扩展名按 Markdown 处理
+  function detectType(path: string | null): 'markdown' | 'yaml' | 'html' | 'jinja' {
+    const lower = (path || '').toLowerCase()
+    if (/\.ya?ml$/.test(lower)) return 'yaml'
+    if (/\.html?$/.test(lower)) return 'html'
+    if (/\.j2$/.test(lower)) return 'jinja'
+    return 'markdown'
+  }
+  const fileType = computed(() => detectType(s3Source.value?.key || filePath.value))
+  const isMarkdownFile = computed(() => fileType.value === 'markdown')
   const viewMode = ref<ViewMode>('preview')
   const isDarkTheme = ref(false)
   const isModified = ref(false)
@@ -357,7 +369,30 @@ function hello() {
   const renderedHtml = ref('')
   let renderSeq = 0
 
+  // YAML / Jinja2：预览只读，输出高亮后的代码块
+  async function renderHighlightedCode(lang: 'yaml' | 'jinja'): Promise<void> {
+    const batch = ++renderSeq
+    pendingCodeBlocks = []
+    const plain = `<pre class="code-block"><code>${escapeHtml(content.value)}</code></pre>`
+    renderedHtml.value = plain
+    if (!content.value) return
+    const html = await highlightCode(content.value, lang)
+    if (batch !== renderSeq) return
+    renderedHtml.value = html
+  }
+
   async function renderMarkdown(): Promise<void> {
+    // HTML 预览使用 iframe 直接渲染源内容；YAML / Jinja2 使用只读高亮代码块
+    if (fileType.value === 'html') {
+      renderSeq++
+      renderedHtml.value = ''
+      return
+    }
+    if (fileType.value === 'yaml' || fileType.value === 'jinja') {
+      await renderHighlightedCode(fileType.value)
+      return
+    }
+
     const batch = ++renderSeq
     const pending: PendingCodeBlock[] = []
     pendingCodeBlocks = pending
@@ -384,9 +419,9 @@ function hello() {
     renderedHtml.value = final
   }
 
-  // 内容变化或主题切换时重新渲染
+  // 内容变化、主题切换或文件类型变化时重新渲染
   watch(
-    [content, isDarkTheme],
+    [content, isDarkTheme, fileType],
     () => {
       currentThemeName.value = isDarkTheme.value ? 'dark' : 'light'
       void renderMarkdown()
@@ -416,6 +451,8 @@ function hello() {
   }
 
   function setContentFromHtml(html: string) {
+    // 只有 Markdown 预览支持 HTML 反写；YAML / HTML 预览为只读
+    if (!isMarkdownFile.value) return
     let mdText = getTurndown().turndown(html)
     // 空段落占位 \u0000 重建为段落间空行：N 个空段落 = N+1 个空行，
     // 与渲染端 preserveBlankLines 插件配对，实现「预览回车 → 保存 → 切回预览」换行不消失
@@ -484,6 +521,8 @@ function hello() {
   // 若当前处于可编辑预览态（contenteditable），先把 DOM 中的最新内容同步回 content.value，
   // 否则 Ctrl+S 时（焦点仍在内容区内、未触发 blur）会保存到旧内容。
   function syncEditablePreviewToContent() {
+    // YAML / HTML 预览为只读，不允许从预览 DOM 反写内容
+    if (!isMarkdownFile.value) return
     const html = useEditorDom().getEditableHtml()
     if (html !== null) {
       // 预览 DOM 与渲染结果一致（用户未编辑）时跳过逆转换，保留原始 Markdown，避免有损转换
@@ -495,6 +534,8 @@ function hello() {
   // 保存后刷新索引：删除该文件旧的全文/向量索引与 Raft 状态，
   // 再按旧状态里的 has_fulltext / has_vector 标识重新生成（子开关关闭时只清理不重建）
   async function refreshIndexAfterSave(kind: 'local' | 's3', targetPath: string) {
+    // 索引服务暂只支持 Markdown 文件
+    if (!/\.(md|markdown|mdown|mdx)$/i.test(targetPath)) return
     const settings = useSettingsStore()
     if (!settings.indexEnabled) return
     const s3 = useS3Store()
@@ -614,6 +655,8 @@ function hello() {
     isModified,
     indexRefreshVersion,
     renderedHtml,
+    fileType,
+    isMarkdownFile,
     fileName,
     ensureRendered,
     setContent,

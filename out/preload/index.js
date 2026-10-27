@@ -22,6 +22,9 @@ electron.contextBridge.exposeInMainWorld("api", {
   // File tree operations
   readFile: (filePath) => electron.ipcRenderer.invoke("filetree:readFile", filePath),
   readDir: (dirPath) => electron.ipcRenderer.invoke("filetree:readDir", dirPath),
+  searchFiles: (rootPath, keyword) => electron.ipcRenderer.invoke("filetree:searchFiles", rootPath, keyword),
+  getAppState: (key) => electron.ipcRenderer.invoke("appState:get", key),
+  setAppState: (key, value) => electron.ipcRenderer.invoke("appState:set", key, value),
   openDirectory: () => electron.ipcRenderer.invoke("filetree:openDirectory"),
   getFileDir: (filePath) => electron.ipcRenderer.invoke("filetree:getFileDir", filePath),
   newFile: (dirPath) => electron.ipcRenderer.invoke("filetree:newFile", dirPath),
@@ -91,7 +94,7 @@ electron.contextBridge.exposeInMainWorld("api", {
   indexCheckS3Files: (config, bucket, keys, raft) => electron.ipcRenderer.invoke("index:checkS3Files", config, bucket, keys, raft),
   indexGetDoc: (kind, path, config, bucket, key, raft) => electron.ipcRenderer.invoke("index:getDoc", kind, path, config, bucket, key, raft),
   indexDeleteDoc: (protocol, host, port, indexName, docId, fields, raft) => electron.ipcRenderer.invoke("index:deleteDoc", protocol, host, port, indexName, docId, fields, raft),
-  indexRefreshAfterSave: (raft, kind, filePath, config, bucket, key, fulltext, vector) => electron.ipcRenderer.invoke(
+  indexRefreshAfterSave: (raft, kind, filePath, config, bucket, key, fulltext, vector, force) => electron.ipcRenderer.invoke(
     "index:refreshAfterSave",
     raft,
     kind,
@@ -100,7 +103,8 @@ electron.contextBridge.exposeInMainWorld("api", {
     bucket,
     key,
     fulltext,
-    vector
+    vector,
+    force
   ),
   // 目录建索引进度事件（主进程逐文件推送）
   onIndexProgress: (callback) => {

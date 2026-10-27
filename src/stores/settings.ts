@@ -19,6 +19,7 @@ export const DEFAULT_RAFT_REST_PORT = '18080'
 export const DEFAULT_RAFT_GROUP = 'group-laoflchMD-etc'
 
 interface PersistedSettings {
+  useCodeMirror: boolean
   indexEnabled: boolean
   fulltextEnabled: boolean
   indexProtocol: IndexProtocol
@@ -47,6 +48,8 @@ interface PersistedSettings {
  * 持久化到 localStorage，修改即保存。
  */
 export const useSettingsStore = defineStore('settings', () => {
+  // 编辑器内核开关：开启使用 CodeMirror（语法高亮），关闭回退到原生 textarea
+  const useCodeMirror = ref(true)
   // 索引服务总开关：关闭后所有索引功能不可用
   const indexEnabled = ref(true)
   // 全文索引子开关：关闭后全文索引（检索/生成索引/全文标签）功能关闭
@@ -80,6 +83,7 @@ export const useSettingsStore = defineStore('settings', () => {
       const raw = localStorage.getItem(SETTINGS_KEY)
       if (raw) {
         const saved = JSON.parse(raw) as Partial<PersistedSettings>
+        if (typeof saved.useCodeMirror === 'boolean') useCodeMirror.value = saved.useCodeMirror
         if (typeof saved.indexEnabled === 'boolean') indexEnabled.value = saved.indexEnabled
         if (typeof saved.fulltextEnabled === 'boolean') fulltextEnabled.value = saved.fulltextEnabled
         if (typeof saved.vectorTextEnabled === 'boolean') vectorTextEnabled.value = saved.vectorTextEnabled
@@ -115,6 +119,7 @@ export const useSettingsStore = defineStore('settings', () => {
   // 持久化
   watch(
     [
+      useCodeMirror,
       indexEnabled,
       fulltextEnabled,
       vectorTextEnabled,
@@ -138,6 +143,7 @@ export const useSettingsStore = defineStore('settings', () => {
     ],
     () => {
       const data: PersistedSettings = {
+        useCodeMirror: useCodeMirror.value,
         indexEnabled: indexEnabled.value,
         fulltextEnabled: fulltextEnabled.value,
         vectorTextEnabled: vectorTextEnabled.value,
@@ -164,6 +170,7 @@ export const useSettingsStore = defineStore('settings', () => {
   )
 
   return {
+    useCodeMirror,
     indexEnabled,
     fulltextEnabled,
     vectorTextEnabled,

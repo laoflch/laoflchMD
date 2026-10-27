@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useEditorStore } from '../stores/editor'
 import { useSettingsStore } from '../stores/settings'
 import { useToastStore } from '../stores/toast'
@@ -17,6 +17,130 @@ const emit = defineEmits<{
 
 const rootDir = ref<string | null>(null)
 const treeData = ref<FileEntry[]>([])
+
+// —— 文件名搜索（当前目录及子目录，前缀匹配） ——
+const searchOpen = ref(false)
+const searchKeyword = ref('')
+const searchResults = ref<Array<{ name: string; path: string; relativePath: string }>>([])
+const searchLoading = ref(false)
+// 是否手动收起下拉列表（按 Esc 收起，再次输入时重新展开）
+const dropdownClosed = ref(false)
+let searchSeq = 0
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+
+// 搜索输入框元素：打开搜索时自动聚焦
+const searchInputEl = ref<HTMLInputElement | null>(null)
+
+function toggleSearch() {
+  searchOpen.value = !searchOpen.value
+  if (!searchOpen.value) {
+    if (searchTimer) clearTimeout(searchTimer)
+    searchKeyword.value = ''
+    searchResults.value = []
+    dropdownClosed.value = false
+  } else {
+    nextTick(() => searchInputEl.value?.focus())
+  }
+}
+
+function clearSearch() {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchKeyword.value = ''
+  searchResults.value = []
+  dropdownClosed.value = false
+}
+
+async function runSearch() {
+  const q = searchKeyword.value.trim()
+  if (!rootDir.value || !q) {
+    searchResults.value = []
+    return
+  }
+  const seq = ++searchSeq
+  searchLoading.value = true
+  try {
+    const res = await window.api.searchFiles(rootDir.value, q)
+    if (seq === searchSeq) searchResults.value = res
+  } catch {
+    if (seq === searchSeq) searchResults.value = []
+  } finally {
+    if (seq === searchSeq) searchLoading.value = false
+  }
+}
+
+function onSearchInput() {
+  dropdownClosed.value = false
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    void runSearch()
+  }, 150)
+}
+
+// 搜索区域根元素：点击外部时关闭下拉列表并清空输入
+const searchEl = ref<HTMLElement | null>(null)
+
+function onDocumentClick(e: MouseEvent) {
+  if (!searchOpen.value) return
+  const el = searchEl.value
+  if (el && e.target instanceof Node && el.contains(e.target)) return
+  clearSearch()
+}
+
+// Esc：收起已展开的搜索下拉列表（输入内容保留）
+function onDocumentKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Escape') return
+  if (!searchOpen.value) return
+  if (!searchKeyword.value.trim() || dropdownClosed.value) return
+  e.preventDefault()
+  dropdownClosed.value = true
+}
+
+onMounted(() => {
+  document.addEventListener('click', onDocumentClick)
+  document.addEventListener('keydown', onDocumentKeydown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', onDocumentClick)
+  document.removeEventListener('keydown', onDocumentKeydown)
+})
+
+/** 逐级展开文件所在的所有子目录 */
+async function expandToPath(filePath: string) {
+  if (!rootDir.value) return
+  const root = rootDir.value.replace(/\/+$/, '')
+  if (!filePath.startsWith(root + '/')) return
+  const parts = filePath.slice(root.length + 1).split('/').slice(0, -1)
+  const next = new Set(expanded.value)
+  let current = root
+  for (const part of parts) {
+    if (!part) continue
+    current = `${current}/${part}`
+    next.add(current)
+  }
+  expanded.value = next
+  await nextTick()
+}
+
+async function openSearchResult(result: { name: string; path: string }) {
+  try {
+    await expandToPath(result.path)
+    const content = await window.api.readFile(result.path)
+    if (content !== null) {
+      store.loadFile(content, result.path, null)
+      selectedPath.value = result.path
+    }
+    clearSearch()
+  } catch (e) {
+    console.error('Failed to open search result:', e)
+  }
+}
+
+// 切换根目录时重置搜索
+watch(rootDir, () => {
+  searchKeyword.value = ''
+  searchResults.value = []
+})
 const expanded = ref<Set<string>>(new Set())
 const selectedPath = ref<string | null>(null)
 const loading = ref(false)
@@ -31,13 +155,18 @@ const contextMenu = ref<{
   y: number
   targetPath: string
   isDirectory: boolean
+  isMarkdown: boolean
 }>({
   visible: false,
   x: 0,
   y: 0,
   targetPath: '',
-  isDirectory: false
+  isDirectory: false,
+  isMarkdown: false
 })
+
+// 右键菜单根元素：用于测量高度，底部超出可视区时整体上移
+const contextMenuEl = ref<HTMLElement | null>(null)
 
 async function loadDir(dirPath: string): Promise<FileEntry[]> {
   try {
@@ -52,8 +181,9 @@ async function openDir(dirPath: string) {
   loading.value = true
   treeData.value = await loadDir(dirPath)
   loading.value = false
-  // Save to localStorage for persistence across restarts
+  // 持久化上次打开的目录：主进程写文件（可靠），localStorage 作为兼容回退
   localStorage.setItem('lastOpenedDir', dirPath)
+  void window.api.setAppState('lastOpenedDir', dirPath)
   checkIndexed(treeData.value)
 }
 
@@ -72,7 +202,7 @@ async function selectNode(entry: FileEntry) {
     return
   }
 
-  if (!entry.isMarkdown) return
+  if (!entry.fileType) return
 
   // Open file directly
   try {
@@ -120,6 +250,8 @@ watch(() => store.filePath, (newPath) => {
 const fulltextOff = computed(() => !settings.indexEnabled || !settings.fulltextEnabled)
 // 向量索引功能是否关闭（索引服务总开关 / 向量文本索引子开关）
 const vectorOff = computed(() => !settings.indexEnabled || !settings.vectorTextEnabled)
+// 右键目标为 YAML / HTML 文件时，索引相关菜单项禁用（索引服务暂只支持 Markdown）
+const indexTargetUnsupported = computed(() => !contextMenu.value.isDirectory && !contextMenu.value.isMarkdown)
 
 // 开关变化时同步刷新「全文」标签：关闭清空，重新打开时重新检测
 watch([() => settings.indexEnabled, () => settings.fulltextEnabled], () => {
@@ -181,19 +313,36 @@ function onIndexInfoDeleted() {
 }
 
 // Context menu handlers
-function showContextMenu(event: MouseEvent, entry: FileEntry) {
+async function showContextMenu(event: MouseEvent, entry: FileEntry) {
   event.preventDefault()
   contextMenu.value = {
     visible: true,
     x: event.clientX,
     y: event.clientY,
     targetPath: entry.path,
-    isDirectory: entry.isDirectory
+    isDirectory: entry.isDirectory,
+    isMarkdown: entry.isMarkdown
+  }
+  await nextTick()
+  const el = contextMenuEl.value
+  if (!el) return
+  const margin = 8
+  const maxTop = window.innerHeight - el.offsetHeight - margin
+  if (contextMenu.value.y > maxTop) {
+    contextMenu.value = { ...contextMenu.value, y: Math.max(margin, maxTop) }
   }
 }
 
 function closeContextMenu() {
   contextMenu.value.visible = false
+}
+
+// 索引服务暂只支持 Markdown 文件：YAML / HTML 文件不可索引
+function indexUnsupported(): boolean {
+  const { isDirectory, isMarkdown } = contextMenu.value
+  if (isDirectory || isMarkdown) return false
+  toastStore.pushToast('err', '索引服务暂只支持 Markdown 文件')
+  return true
 }
 
 async function handleNewFile() {
@@ -256,6 +405,7 @@ async function handleIndex() {
   const targetPath = contextMenu.value.targetPath
   const isDir = contextMenu.value.isDirectory
   if (!targetPath) return
+  if (indexUnsupported()) return
   // 索引服务关闭时禁用全文索引功能
   if (!settings.indexEnabled || !settings.fulltextEnabled) {
     toastStore.pushToast(
@@ -360,6 +510,7 @@ async function handleVectorIndex() {
   const targetPath = contextMenu.value.targetPath
   const isDir = contextMenu.value.isDirectory
   if (!targetPath) return
+  if (indexUnsupported()) return
   // 索引服务关闭时禁用向量索引功能
   if (!settings.indexEnabled || !settings.vectorTextEnabled) {
     toastStore.pushToast(
@@ -424,6 +575,7 @@ async function handleVectorDelete() {
   closeContextMenu()
   const targetPath = contextMenu.value.targetPath
   if (!targetPath) return
+  if (indexUnsupported()) return
   try {
     const res = await window.api.vectorDeleteFile(
       raftCfg(),
@@ -444,6 +596,193 @@ async function handleVectorDelete() {
   }
 }
 
+// ———————— 组合索引操作（全文 / 向量 / 重新索引） ————————
+
+function fulltextCfg() {
+  const protocol = settings.indexProtocol
+  return {
+    protocol,
+    host: protocol === 'grpc' ? settings.grpcHost : settings.restHost,
+    port: protocol === 'grpc' ? settings.grpcPort : settings.restPort,
+    indexName: settings.indexName
+  }
+}
+
+function vectorCfg() {
+  return {
+    host: settings.grpcHost,
+    port: settings.grpcPort,
+    indexName: settings.vectorIndexName,
+    modelName: settings.vectorModelName,
+    chunkSize: settings.vectorChunkSize,
+    overlap: settings.vectorChunkOverlap
+  }
+}
+
+/** 收集目标下的 Markdown 文件（单文件直接返回；目录递归） */
+async function collectMarkdownPaths(targetPath: string, isDir: boolean): Promise<string[]> {
+  if (!isDir) return [targetPath]
+  const out: string[] = []
+  async function walk(dir: string) {
+    const entries = await loadDir(dir)
+    for (const e of entries) {
+      if (e.isDirectory) await walk(e.path)
+      else if (e.name.toLowerCase().endsWith('.md')) out.push(e.path)
+    }
+  }
+  await walk(targetPath)
+  return out
+}
+
+/** 删除单个文件的全文索引；无索引视为已达成目标 */
+async function deleteFulltextOf(filePath: string): Promise<boolean> {
+  const ft = fulltextCfg()
+  try {
+    const doc = await window.api.indexGetDoc('local', filePath, undefined, undefined, undefined, raftCfg())
+    if (!doc.ok || !doc.doc) return true
+    const id = String(doc.doc.docId ?? '')
+    if (!/^\d+$/.test(id)) return true
+    const res = await window.api.indexDeleteDoc(
+      ft.protocol,
+      ft.host,
+      ft.port,
+      ft.indexName,
+      id,
+      { ...doc.doc.fields },
+      raftCfg()
+    )
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+/** 删除单个文件的向量索引；无索引时保持静默 */
+async function deleteVectorOf(filePath: string): Promise<boolean> {
+  const v = vectorCfg()
+  try {
+    await window.api.vectorDeleteFile(raftCfg(), v.host, v.port, v.indexName, 'local', filePath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 生成全文 & 向量索引（依次执行，沿用各自子开关） */
+async function handleIndexBoth() {
+  await handleIndex()
+  await handleVectorIndex()
+}
+
+/** 删除全文索引（文件或目录） */
+async function handleFulltextDelete() {
+  closeContextMenu()
+  const { targetPath, isDirectory } = contextMenu.value
+  if (!targetPath) return
+  if (indexUnsupported()) return
+  if (!settings.indexEnabled || !settings.fulltextEnabled) {
+    toastStore.pushToast(
+      'err',
+      settings.indexEnabled ? '全文索引服务已关闭，请在全局设置中启用' : '索引服务已关闭，请在全局设置中启用'
+    )
+    return
+  }
+  try {
+    const files = await collectMarkdownPaths(targetPath, isDirectory)
+    let done = 0
+    for (const f of files) {
+      if (await deleteFulltextOf(f)) done++
+    }
+    toastStore.pushToast('ok', `已删除 ${done} 个文件的全文索引`)
+    const next = new Set(indexedPaths.value)
+    for (const f of files) next.delete(f)
+    indexedPaths.value = next
+    checkIndexed(treeData.value)
+  } catch (e: unknown) {
+    toastStore.pushToast('err', e instanceof Error ? e.message : '删除全文索引失败')
+  }
+}
+
+/** 删除全文和向量索引（文件或目录） */
+async function handleAllDelete() {
+  closeContextMenu()
+  const { targetPath, isDirectory } = contextMenu.value
+  if (!targetPath) return
+  if (indexUnsupported()) return
+  if (!settings.indexEnabled) {
+    toastStore.pushToast('err', '索引服务已关闭，请在全局设置中启用')
+    return
+  }
+  try {
+    const files = await collectMarkdownPaths(targetPath, isDirectory)
+    let done = 0
+    for (const f of files) {
+      const okFt = await deleteFulltextOf(f)
+      const okVec = await deleteVectorOf(f)
+      if (okFt && okVec) done++
+    }
+    toastStore.pushToast('ok', `已删除 ${done} 个文件的全文和向量索引`)
+    const nextFt = new Set(indexedPaths.value)
+    const nextVec = new Set(vectorIndexedPaths.value)
+    for (const f of files) {
+      nextFt.delete(f)
+      nextVec.delete(f)
+    }
+    indexedPaths.value = nextFt
+    vectorIndexedPaths.value = nextVec
+    checkIndexed(treeData.value)
+  } catch (e: unknown) {
+    toastStore.pushToast('err', e instanceof Error ? e.message : '删除索引失败')
+  }
+}
+
+/** 重新索引：仅更新已有索引，原本没有索引的文件不新增 */
+async function handleReindex() {
+  closeContextMenu()
+  const { targetPath, isDirectory } = contextMenu.value
+  if (!targetPath) return
+  if (indexUnsupported()) return
+  if (!settings.indexEnabled) {
+    toastStore.pushToast('err', '索引服务已关闭，请在全局设置中启用')
+    return
+  }
+  try {
+    const files = await collectMarkdownPaths(targetPath, isDirectory)
+    const ft = { ...fulltextCfg(), regenerate: settings.fulltextEnabled }
+    const vc = { ...vectorCfg(), regenerate: settings.vectorTextEnabled }
+    let updated = 0
+    let failed = 0
+    for (const f of files) {
+      const res = await window.api.indexRefreshAfterSave(
+        raftCfg(),
+        'local',
+        f,
+        undefined,
+        undefined,
+        undefined,
+        ft,
+        vc,
+        true
+      )
+      if (res?.ok) {
+        if (res.message) updated++
+      } else {
+        failed++
+      }
+    }
+    if (failed > 0) {
+      toastStore.pushToast('err', `重新索引完成：更新 ${updated} 个，失败 ${failed} 个`)
+    } else if (updated > 0) {
+      toastStore.pushToast('ok', `已重新索引 ${updated} 个文件（无索引的文件已跳过）`)
+    } else {
+      toastStore.pushToast('ok', '没有已建立索引的文件，已跳过')
+    }
+    checkIndexed(treeData.value)
+  } catch (e: unknown) {
+    toastStore.pushToast('err', e instanceof Error ? e.message : '重新索引失败')
+  }
+}
+
 // Click outside context menu to close it
 if (typeof document !== 'undefined') {
   document.addEventListener('click', (e) => {
@@ -457,8 +796,14 @@ if (typeof document !== 'undefined') {
 }
 
 onMounted(async () => {
-  // Try to restore last opened directory from localStorage
-  const lastDir = localStorage.getItem('lastOpenedDir')
+  // 恢复上次打开的目录：优先主进程持久化，回退 localStorage
+  let lastDir: string | null = null
+  try {
+    lastDir = await window.api.getAppState('lastOpenedDir')
+  } catch {
+    lastDir = null
+  }
+  if (!lastDir) lastDir = localStorage.getItem('lastOpenedDir')
   if (lastDir) {
     await openDir(lastDir)
   }
@@ -481,15 +826,69 @@ defineExpose({ refreshTree, openDir })
 
 <template>
   <div class="file-tree-sidebar" :class="{ 'dark-theme': store.isDarkTheme }" @contextmenu.prevent>
-    <!-- Header: 目录名 + 打开文件夹按钮 -->
-    <div class="sidebar-header">
-      <div class="root-path" :title="rootDir || ''">
+    <!-- Header: 目录名 + 打开文件夹按钮（搜索时用搜索框替换目录名显示） -->
+    <div class="sidebar-header" :class="{ 'search-mode': searchOpen }">
+      <!-- 文件名搜索：占用「当前文件夹」位置，不再单独占一行 -->
+      <div v-if="searchOpen" ref="searchEl" class="tree-search">
+        <div class="tree-search-bar">
+          <input
+            ref="searchInputEl"
+            v-model="searchKeyword"
+            class="tree-search-input"
+            type="text"
+            placeholder="搜索文件名"
+            title="搜索当前目录及子目录的文件名"
+            @input="onSearchInput"
+            @keydown.enter="runSearch"
+          />
+          <button class="tree-search-btn" title="清空搜索" @click="clearSearch">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M4 4l8 8M12 4l-8 8"/>
+            </svg>
+          </button>
+        </div>
+        <div v-if="searchKeyword.trim() && !dropdownClosed" class="tree-search-results">
+          <div v-if="searchLoading" class="tree-search-empty">搜索中...</div>
+          <div v-else-if="searchResults.length === 0" class="tree-search-empty">无匹配文件</div>
+          <template v-else>
+            <div
+              v-for="result in searchResults"
+              :key="result.path"
+              class="tree-search-item"
+              :title="result.path"
+              @click="openSearchResult(result)"
+            >
+              <span class="tree-search-name">{{ result.name }}</span>
+              <span class="tree-search-path">{{ result.relativePath }}</span>
+            </div>
+          </template>
+        </div>
+      </div>
+      <!-- 搜索模式：查找图标位于行最右，点击退出搜索 -->
+      <button v-if="searchOpen" class="icon-btn active" title="退出搜索" @click="toggleSearch">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="7" cy="7" r="4.5"/>
+          <path d="M10.5 10.5L14 14"/>
+        </svg>
+      </button>
+      <div v-if="!searchOpen" class="root-path" :title="rootDir || ''">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
           <path d="M1.5 3.5a1 1 0 0 1 1-1h3.172a1 1 0 0 1 .707.293L7.5 3.914H13.5a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1V3.5Z"/>
         </svg>
         <span class="root-path-text">{{ rootDir ? rootDir.split('/').pop() || rootDir : '未打开文件夹' }}</span>
       </div>
-      <div class="sidebar-actions">
+      <div v-if="!searchOpen" class="sidebar-actions">
+        <button
+          class="icon-btn"
+          title="搜索文件名"
+          @click="toggleSearch"
+          :disabled="!rootDir"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="7" cy="7" r="4.5"/>
+            <path d="M10.5 10.5L14 14"/>
+          </svg>
+        </button>
         <button
           class="icon-btn"
           title="刷新"
@@ -557,6 +956,7 @@ defineExpose({ refreshTree, openDir })
     <!-- Context menu -->
     <div
       v-if="contextMenu.visible"
+      ref="contextMenuEl"
       class="context-menu"
       :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
     >
@@ -578,13 +978,13 @@ defineExpose({ refreshTree, openDir })
         </svg>
         重命名
       </div>
-      <div class="context-menu-item" :class="{ disabled: indexing || fulltextOff }" @click="handleIndex">
+      <div class="context-menu-item" :class="{ disabled: indexing || fulltextOff || indexTargetUnsupported }" @click="handleIndex">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M8 2.5v11M3.5 8h9"/>
         </svg>
         生成全文索引
       </div>
-      <div class="context-menu-item" :class="{ disabled: vectorIndexing || vectorOff }" @click="handleVectorIndex">
+      <div class="context-menu-item" :class="{ disabled: vectorIndexing || vectorOff || indexTargetUnsupported }" @click="handleVectorIndex">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="4.5" cy="5" r="1.6"/>
           <circle cx="11.5" cy="4" r="1.6"/>
@@ -593,11 +993,49 @@ defineExpose({ refreshTree, openDir })
         </svg>
         生成向量索引
       </div>
-      <div class="context-menu-item" :class="{ disabled: vectorOff }" @click="handleVectorDelete">
+      <div
+        class="context-menu-item"
+        :class="{ disabled: indexing || vectorIndexing || fulltextOff || vectorOff || indexTargetUnsupported }"
+        @click="handleIndexBoth"
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M8 2.5v7M4.5 6h7"/>
+          <circle cx="4" cy="12.5" r="1.3"/>
+          <circle cx="8" cy="12.5" r="1.3"/>
+          <circle cx="12" cy="12.5" r="1.3"/>
+        </svg>
+        生成全文&向量索引
+      </div>
+      <div class="context-menu-item" :class="{ disabled: indexing || vectorIndexing || indexTargetUnsupported }" @click="handleReindex">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M13 8a5 5 0 1 1-1.5-3.5"/>
+          <path d="M13 2v3h-3"/>
+        </svg>
+        重新索引
+      </div>
+      <div class="context-menu-divider"></div>
+      <div class="context-menu-item" :class="{ disabled: indexing || fulltextOff || indexTargetUnsupported }" @click="handleFulltextDelete">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6 1.5h4M2.5 4h11M5.5 4l.5 10h4l.5-10"/>
+        </svg>
+        删除全文索引
+      </div>
+      <div class="context-menu-item" :class="{ disabled: vectorOff || indexTargetUnsupported }" @click="handleVectorDelete">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M6 1.5h4M2.5 4h11M5.5 4l.5 10h4l.5-10M6.5 6.5v5M9.5 6.5v5"/>
         </svg>
         删除向量索引
+      </div>
+      <div
+        class="context-menu-item"
+        :class="{ disabled: fulltextOff || vectorOff || indexTargetUnsupported }"
+        @click="handleAllDelete"
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6 1.5h4M2.5 4h11M5.5 4l.5 10h4l.5-10"/>
+          <path d="M10.5 9.5l2 2M12.5 9.5l-2 2"/>
+        </svg>
+        删除全文和向量索引
       </div>
       <div class="context-menu-divider"></div>
       <div class="context-menu-item danger" @click="handleDelete">
@@ -632,6 +1070,12 @@ defineExpose({ refreshTree, openDir })
   border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
   gap: 8px;
+  position: relative;
+}
+
+/* 搜索模式：减小输入框上下与右侧边距 */
+.sidebar-header.search-mode {
+  padding: 4px 6px 4px 12px;
 }
 
 .sidebar-actions {
@@ -797,5 +1241,131 @@ defineExpose({ refreshTree, openDir })
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+/* —— 文件名搜索（内嵌在头部，替换「当前文件夹」显示） —— */
+.tree-search {
+  flex: 1;
+  min-width: 0;
+}
+
+.tree-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+  /* 高度 32px + 上下各 4px = 40px，与普通模式（24px 图标 + 上下 8px）等高 */
+  height: 32px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  background: var(--bg-primary);
+}
+
+.tree-search-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.tree-search-input::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
+.tree-search-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  border-radius: 3px;
+}
+
+.tree-search-btn:hover {
+  color: var(--text-primary);
+  background: var(--hover-bg, rgba(64, 158, 255, 0.12));
+}
+
+.tree-search-results {
+  position: absolute;
+  left: 12px;
+  right: 6px;
+  top: calc(100% - 1px);
+  z-index: 40;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+}
+
+.tree-search-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.tree-search-item + .tree-search-item {
+  border-top: 1px solid var(--border-color);
+}
+
+.tree-search-item:hover {
+  background: var(--hover-bg, rgba(64, 158, 255, 0.12));
+}
+
+.tree-search-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-search-path {
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-search-empty {
+  padding: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.icon-btn.active {
+  color: var(--accent-color);
+  background: var(--hover-bg, rgba(64, 158, 255, 0.12));
+}
+
+.tree-search-results::-webkit-scrollbar {
+  width: 6px;
+}
+
+.tree-search-results::-webkit-scrollbar-thumb {
+  background: rgba(144, 147, 153, 0.3);
+  border-radius: 3px;
+}
+
+.tree-search-results::-webkit-scrollbar-track {
+  background: transparent;
 }
 </style>

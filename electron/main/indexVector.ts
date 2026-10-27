@@ -773,7 +773,8 @@ async function refreshAfterSave(
   bucket: string | undefined,
   key: string | undefined,
   fulltext: RefreshFulltextCfg | null,
-  vector: RefreshVectorCfg | null
+  vector: RefreshVectorCfg | null,
+  force = false
 ): Promise<{ ok: boolean; message: string }> {
   try {
     const content =
@@ -836,19 +837,36 @@ async function refreshAfterSave(
     // 当前摘要的状态记录若缺少行 ID / chunk ID，同样需要重建修复
     const brokenFulltext = !!current && current.has_fulltext === '1' && !/^\d+$/.test(current.row_id)
     const brokenVector = !!current && current.has_vector === '1' && !current.chunk_ids.length
-    if (!staleRaft.length && !staleRows.length && !brokenFulltext && !brokenVector) {
+    // 该文件是否已建立过索引（存在状态记录 / 旧索引行 / 旧摘要记录）
+    const hasAnyIndex =
+      (!!current && (current.has_fulltext === '1' || current.has_vector === '1' || !!current.row_id)) ||
+      staleRaft.length > 0 ||
+      staleRows.length > 0 ||
+      mdHits.length > 0
+    if (force) {
+      // 强制重新索引：只有已经建立过索引的文件才重建，原本没有索引的直接跳过
+      if (!hasAnyIndex) return { ok: true, message: '' }
+    } else if (!staleRaft.length && !staleRows.length && !brokenFulltext && !brokenVector) {
       return { ok: true, message: '' }
     }
 
-    const wantFulltext =
-      staleRows.length > 0 ||
-      brokenFulltext ||
-      staleRaft.some((e) => e.meta.has_fulltext === '1')
+    const wantFulltext = force
+      ? (!!current && current.has_fulltext === '1') ||
+        staleRows.length > 0 ||
+        mdHits.length > 0 ||
+        staleRaft.some((e) => e.meta.has_fulltext === '1')
+      : staleRows.length > 0 ||
+        brokenFulltext ||
+        staleRaft.some((e) => e.meta.has_fulltext === '1')
     const staleChunks = new Set<number>()
     for (const e of staleRaft) for (const id of e.meta.chunk_ids) staleChunks.add(id)
     for (const h of mdHits) if (h.rowId !== currentRowId) for (const id of h.chunkIds) staleChunks.add(id)
-    const wantVector =
-      staleChunks.size > 0 || brokenVector || staleRaft.some((e) => e.meta.has_vector === '1')
+    const wantVector = force
+      ? (!!current && current.has_vector === '1') ||
+        staleChunks.size > 0 ||
+        mdHits.some((h) => h.hasVector) ||
+        staleRaft.some((e) => e.meta.has_vector === '1')
+      : staleChunks.size > 0 || brokenVector || staleRaft.some((e) => e.meta.has_vector === '1')
 
     // 删除旧全文索引行
     for (const rowId of Array.from(new Set(staleRows))) {
@@ -1372,9 +1390,10 @@ export function registerVectorIndexHandlers(): void {
       bucket: string | undefined,
       key: string | undefined,
       fulltext: RefreshFulltextCfg | null,
-      vector: RefreshVectorCfg | null
+      vector: RefreshVectorCfg | null,
+      force?: boolean
     ) => {
-      return refreshAfterSave(raft, kind, filePath, config, bucket, key, fulltext, vector)
+      return refreshAfterSave(raft, kind, filePath, config, bucket, key, fulltext, vector, !!force)
     }
   )
 }

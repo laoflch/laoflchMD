@@ -37,8 +37,16 @@ function createClient(config: S3Config) {
   })
 }
 
-function isMarkdownKey(key: string): boolean {
-  return /\.(md|markdown|mdown)$/i.test(key)
+// 支持预览/编辑的类型：Markdown、YAML、HTML、Jinja2 模板
+type PreviewFileType = 'markdown' | 'yaml' | 'html' | 'jinja'
+
+function detectFileType(key: string): PreviewFileType | null {
+  const lower = key.toLowerCase()
+  if (/\.(md|markdown|mdown|mdx)$/.test(lower)) return 'markdown'
+  if (/\.ya?ml$/.test(lower)) return 'yaml'
+  if (/\.html?$/.test(lower)) return 'html'
+  if (/\.j2$/.test(lower)) return 'jinja'
+  return null
 }
 
 // S3 返回的 Key 中可能含 URL 编码字符（如 %E2%80%91），解码为可读形式后再存储/展示；
@@ -92,17 +100,19 @@ export function registerS3Handlers(): void {
 
         const files = (res.Contents || [])
           .filter((o: any) => o.Key && o.Key !== prefix)
-          // 只显示 Markdown 文件（.md 结尾），过滤掉其他类型的对象
-          .filter((o: any) => isMarkdownKey(o.Key as string))
+          // 只显示支持的类型（Markdown / YAML / HTML），过滤掉其他对象
+          .filter((o: any) => detectFileType(o.Key as string) !== null)
           .map((o: any) => {
             const key = safeDecodeKey(o.Key as string)
+            const fileType = detectFileType(key)
             return {
               key,
               name: key.split('/').pop() || '',
               size: o.Size || 0,
               lastModified: o.LastModified ? o.LastModified.toISOString() : null,
               eTag: o.ETag,
-              isMarkdown: true
+              isMarkdown: fileType === 'markdown',
+              fileType
             }
           })
 

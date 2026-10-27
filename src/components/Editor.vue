@@ -5,9 +5,12 @@ import { useEditorDom } from '../composables/useEditorDom'
 import { useFindReplace } from '../composables/useFindReplace'
 import { useEditorStore } from '../stores/editor'
 import { useS3Store } from '../stores/s3'
+import { useSettingsStore } from '../stores/settings'
+import CodeMirrorEditor from './CodeMirrorEditor.vue'
 
 const store = useEditorStore()
 const s3 = useS3Store()
+const settings = useSettingsStore()
 const editorDom = useEditorDom()
 const findReplace = useFindReplace()
 const { isOpen, showReplace, query, replaceText, matches, currentIndex, caseSensitive } = useFindReplace()
@@ -21,6 +24,8 @@ let startRatio = 0
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const previewScrollRef = ref<HTMLElement | null>(null)
 const editableRef = ref<HTMLElement | null>(null)
+// CodeMirror 编辑器实例（全局设置开启时使用）
+const cmRef = ref<InstanceType<typeof CodeMirrorEditor> | null>(null)
 
 // 查找替换 UI 引用
 const findInputRef = ref<HTMLInputElement | null>(null)
@@ -104,6 +109,17 @@ const statusPath = computed(() => {
   return ''
 })
 
+// 编辑区占位提示：按文件类型区分
+const editorPlaceholder = computed(() =>
+  store.fileType === 'yaml'
+    ? '在此输入 YAML...'
+    : store.fileType === 'html'
+      ? '在此编辑 HTML...'
+      : store.fileType === 'jinja'
+        ? '在此编辑 Jinja2 模板...'
+        : '在此输入 Markdown...'
+)
+
 onMounted(() => {
   document.addEventListener('wheel', handleCtrlWheel, { passive: false })
   if (window.api.getHostname) {
@@ -162,6 +178,7 @@ function removePreviewMarks() {
 function applyPreviewFind() {
   const root = editableRef.value
   if (!root || store.viewMode !== 'preview') return
+  // HTML 预览用 iframe 渲染，没有可查找的 DOM；Markdown / YAML / Jinja2 共用该 DOM
   const prevIdx = previewCurrent.value
   removePreviewMarks()
   const q = query.value
@@ -346,8 +363,12 @@ function onEditorScroll() {
   syncEditorToPreview()
 }
 
-// 把当前匹配滚动到可视区域（借助高亮层相同排版定位）
+// 把当前匹配滚动到可视区域（textarea 借助高亮层，CodeMirror 用装饰标记）
 function syncFindScroll() {
+  if (settings.useCodeMirror) {
+    cmRef.value?.scrollToMatch()
+    return
+  }
   const ta = textareaRef.value
   const layer = hlLayerRef.value
   if (!ta || !layer) return
@@ -470,6 +491,43 @@ function onTextareaKeydown(event: KeyboardEvent) {
   }
 }
 
+// ——— CodeMirror 编辑区事件 ———
+function onCodeMirrorChange(value: string) {
+  store.setContent(value)
+}
+
+// 编辑区滚动信息：CodeMirror / textarea 统一读取
+function editorScrollMetrics(): { top: number; height: number; clientHeight: number } | null {
+  if (settings.useCodeMirror) {
+    const cm = cmRef.value
+    return cm ? cm.getScrollMetrics() : null
+  }
+  const ta = textareaRef.value
+  return ta ? { top: ta.scrollTop, height: ta.scrollHeight, clientHeight: ta.clientHeight } : null
+}
+
+function setEditorScrollTop(top: number) {
+  if (settings.useCodeMirror) {
+    cmRef.value?.setScrollTop(top)
+    return
+  }
+  if (textareaRef.value) textareaRef.value.scrollTop = top
+}
+
+// 编辑区光标：CodeMirror / textarea 统一读取
+function getEditorCaret(): { offset: number; hasCaret: boolean } {
+  if (settings.useCodeMirror) {
+    const cm = cmRef.value
+    return cm
+      ? { offset: cm.getSelectionOffset(), hasCaret: cm.hasFocus() }
+      : { offset: 0, hasCaret: false }
+  }
+  const ta = textareaRef.value
+  return ta
+    ? { offset: ta.selectionStart, hasCaret: document.activeElement === ta }
+    : { offset: 0, hasCaret: false }
+}
+
 // Preview editable mode: 每次内容变动实时标记为未保存（并阻止渲染结果覆盖编辑中的 DOM）
 function onPreviewInput() {
   previewDirty.value = true
@@ -525,11 +583,11 @@ let lastEditorRatio = -1
 let lastPreviewRatio = -1
 
 function syncEditorToPreview() {
-  const textarea = textareaRef.value
+  const editor = editorScrollMetrics()
   const preview = previewScrollRef.value
-  if (!textarea || !preview || textarea.scrollHeight <= textarea.clientHeight) return
+  if (!editor || !preview || editor.height <= editor.clientHeight) return
 
-  const ratio = textarea.scrollTop / (textarea.scrollHeight - textarea.clientHeight)
+  const ratio = editor.top / (editor.height - editor.clientHeight)
   // Only sync if the ratio actually changed (avoid circular loop)
   if (Math.abs(ratio - lastPreviewRatio) > 0.001) {
     lastPreviewRatio = ratio
@@ -539,16 +597,16 @@ function syncEditorToPreview() {
 }
 
 function syncPreviewToEditor() {
-  const textarea = textareaRef.value
+  const editor = editorScrollMetrics()
   const preview = previewScrollRef.value
-  if (!preview || !textarea || preview.scrollHeight <= preview.clientHeight) return
+  if (!preview || !editor || preview.scrollHeight <= preview.clientHeight) return
 
   const ratio = preview.scrollTop / (preview.scrollHeight - preview.clientHeight)
   // Only sync if the ratio actually changed (avoid circular loop)
   if (Math.abs(ratio - lastEditorRatio) > 0.001) {
     lastEditorRatio = ratio
     lastPreviewRatio = ratio
-    textarea.scrollTop = ratio * (textarea.scrollHeight - textarea.clientHeight)
+    setEditorScrollTop(ratio * (editor.height - editor.clientHeight))
   }
 }
 
@@ -568,6 +626,8 @@ const sourceCharCount = computed(() => countValidChars(store.content))
 
 // 预览页：从渲染后的 HTML 提取纯文本，统计可见文本的有效字符数
 const previewCharCount = computed(() => {
+  // HTML 文件由 iframe 渲染，预览区无 renderedHtml，直接按源文本统计
+  if (store.fileType === 'html') return countValidChars(store.content)
   const html = store.renderedHtml || ''
   if (!html) return 0
   const doc = new DOMParser().parseFromString(html, 'text/html')
@@ -592,20 +652,73 @@ function lineRatioOfOffset(content: string, offset: number): number {
   return total > 1 ? line / (total - 1) : 0
 }
 
+// 记录编辑区当前位置（离开编辑类视图 / 切换编辑器内核前调用）
+function captureEditPos(useCm: boolean) {
+  const metrics = useCm
+    ? (cmRef.value?.getScrollMetrics() ?? null)
+    : (() => {
+        const ta = textareaRef.value
+        return ta ? { top: ta.scrollTop, height: ta.scrollHeight, clientHeight: ta.clientHeight } : null
+      })()
+  if (!metrics) return
+  const max = metrics.height - metrics.clientHeight
+  const caret = useCm
+    ? cmRef.value
+      ? { offset: cmRef.value.getSelectionOffset(), hasCaret: cmRef.value.hasFocus() }
+      : { offset: 0, hasCaret: false }
+    : (() => {
+        const ta = textareaRef.value
+        return ta
+          ? { offset: ta.selectionStart, hasCaret: document.activeElement === ta }
+          : { offset: 0, hasCaret: false }
+      })()
+  viewPos = {
+    mode: 'edit',
+    sel: caret.offset,
+    scroll: metrics.top,
+    ratio: max > 0 ? metrics.top / max : 0,
+    hasCaret: caret.hasCaret
+  }
+}
+
+// 恢复编辑区位置（进入编辑类视图 / 切换编辑器内核后调用）
+function restoreEditPos() {
+  const content = store.content
+  const pos =
+    viewPos.mode === 'edit'
+      ? viewPos.sel
+      : Math.min(content.length, Math.max(0, Math.round((viewPos.ratio >= 0 ? viewPos.ratio : 0) * content.length)))
+
+  if (settings.useCodeMirror) {
+    const cm = cmRef.value
+    if (!cm) return
+    cm.focus()
+    cm.setSelection(pos)
+    const metrics = cm.getScrollMetrics()
+    const target =
+      viewPos.mode === 'edit'
+        ? viewPos.scroll
+        : lineRatioOfOffset(content, pos) * (metrics.height - metrics.clientHeight)
+    cm.setScrollTop(Math.max(0, target))
+    return
+  }
+
+  const ta = textareaRef.value
+  if (!ta) return
+  try {
+    ta.setSelectionRange(pos, pos)
+  } catch {}
+  ta.focus()
+  ta.scrollTop =
+    viewPos.mode === 'edit' ? viewPos.scroll : lineRatioOfOffset(content, pos) * (ta.scrollHeight - ta.clientHeight)
+}
+
 watch(
   () => store.viewMode,
   async (mode, oldMode) => {
     // 离开编辑类视图：保存光标偏移/滚动位置/是否有光标焦点
-    if ((oldMode === 'edit' || oldMode === 'live') && textareaRef.value) {
-      const ta = textareaRef.value
-      const max = ta.scrollHeight - ta.clientHeight
-      viewPos = {
-        mode: 'edit',
-        sel: ta.selectionStart,
-        scroll: ta.scrollTop,
-        ratio: max > 0 ? ta.scrollTop / max : 0,
-        hasCaret: document.activeElement === ta
-      }
+    if (oldMode === 'edit' || oldMode === 'live') {
+      captureEditPos(settings.useCodeMirror)
     }
     // 离开预览：优先按光标比例记忆；光标不在预览内容内时，按滚动位置比例
     if (oldMode === 'preview' && previewScrollRef.value) {
@@ -630,21 +743,7 @@ watch(
     }
     await nextTick()
     if (mode === 'edit' || mode === 'live') {
-      const content = store.content
-      const pos =
-        viewPos.mode === 'edit'
-          ? viewPos.sel
-          : Math.min(content.length, Math.max(0, Math.round((viewPos.ratio >= 0 ? viewPos.ratio : 0) * content.length)))
-      // nextTick 后重新获取 textarea（预览模式下旧引用为 null，必须在新 DOM 挂载后取值）
-      const newTa = textareaRef.value
-      if (newTa) {
-        try {
-          newTa.setSelectionRange(pos, pos)
-        } catch {}
-        newTa.focus()
-        newTa.scrollTop =
-          viewPos.mode === 'edit' ? viewPos.scroll : lineRatioOfOffset(content, pos) * (newTa.scrollHeight - newTa.clientHeight)
-      }
+      restoreEditPos()
     } else if (mode === 'preview') {
       const pv = previewScrollRef.value
       if (pv) {
@@ -661,6 +760,18 @@ watch(
       }
     }
   }
+)
+
+// 切换编辑器内核（CodeMirror ↔ textarea）：保留当前光标与滚动位置
+watch(
+  () => settings.useCodeMirror,
+  (_value, oldValue) => {
+    captureEditPos(!!oldValue)
+    void nextTick(() => {
+      if (store.viewMode === 'edit' || store.viewMode === 'live') restoreEditPos()
+    })
+  },
+  { flush: 'pre' }
 )
 </script>
 
@@ -702,9 +813,25 @@ watch(
       </div>
     </div>
 
-    <!-- Edit mode: textarea only -->
+    <!-- Edit mode: CodeMirror（全局开关开启）或原生 textarea -->
     <div v-if="store.viewMode === 'edit'" class="edit-pane">
-      <div class="editor-wrap">
+      <CodeMirrorEditor
+        v-if="settings.useCodeMirror"
+        ref="cmRef"
+        :model-value="store.content"
+        :file-type="store.fileType"
+        :dark="store.isDarkTheme"
+        :placeholder="editorPlaceholder"
+        :matches="matches"
+        :current-match="currentIndex"
+        @update:model-value="onCodeMirrorChange"
+        @scroll="syncEditorToPreview"
+        @undo="store.undo()"
+        @redo="store.redo()"
+        @bold="store.insertText('**', '**')"
+        @italic="store.insertText('*', '*')"
+      />
+      <div v-else class="editor-wrap">
         <div
           ref="hlLayerRef"
           class="hl-layer"
@@ -719,7 +846,7 @@ watch(
           @input="onTextareaInput"
           @keydown="onTextareaKeydown"
           @scroll="onEditorScroll"
-          placeholder="在此输入 Markdown..."
+          :placeholder="editorPlaceholder"
           spellcheck="true"
         ></textarea>
       </div>
@@ -732,13 +859,22 @@ watch(
       </div>
     </div>
 
-    <!-- Preview mode: rendered only (editable) -->
+    <!-- Preview mode: rendered only (editable for Markdown; YAML / Jinja2 read-only; HTML browser-like) -->
     <div v-else-if="store.viewMode === 'preview'" class="preview-pane">
       <div ref="previewScrollRef" class="preview-scroll">
+        <!-- HTML：浏览器渲染效果（沙箱 iframe） -->
+        <iframe
+          v-if="store.fileType === 'html'"
+          class="html-preview"
+          :srcdoc="store.content"
+          sandbox="allow-same-origin allow-popups allow-forms allow-modals"
+        ></iframe>
+        <!-- Markdown：可编辑预览；YAML / Jinja2：只读高亮预览 -->
         <div
+          v-else
           ref="editableRef"
           class="preview-content markdown-body"
-          :contenteditable="true"
+          :contenteditable="store.fileType === 'markdown'"
           @input="onPreviewInput"
           @blur="onPreviewBlur"
           @keydown="onPreviewKeydown"
@@ -758,7 +894,23 @@ watch(
     <div v-else class="live-pane">
       <div class="live-body">
         <div class="live-edit" :style="{ width: (splitRatio * 100) + '%' }">
-          <div class="editor-wrap">
+          <CodeMirrorEditor
+            v-if="settings.useCodeMirror"
+            ref="cmRef"
+            :model-value="store.content"
+            :file-type="store.fileType"
+            :dark="store.isDarkTheme"
+            :placeholder="editorPlaceholder"
+            :matches="matches"
+            :current-match="currentIndex"
+            @update:model-value="onCodeMirrorChange"
+            @scroll="syncEditorToPreview"
+            @undo="store.undo()"
+            @redo="store.redo()"
+            @bold="store.insertText('**', '**')"
+            @italic="store.insertText('*', '*')"
+          />
+          <div v-else class="editor-wrap">
             <div
               ref="hlLayerRef"
               class="hl-layer"
@@ -773,14 +925,21 @@ watch(
               @input="onTextareaInput"
               @keydown="onTextareaKeydown"
               @scroll="onEditorScroll"
-              placeholder="在此输入 Markdown..."
+              :placeholder="editorPlaceholder"
               spellcheck="true"
             ></textarea>
           </div>
         </div>
         <div class="live-divider" :class="{ dragging: isDragging }" @mousedown="onDividerMouseDown"></div>
         <div ref="previewScrollRef" class="live-preview preview-pane" @scroll="syncPreviewToEditor">
-          <div class="preview-content markdown-body" v-html="store.renderedHtml"></div>
+          <!-- HTML：浏览器渲染效果（沙箱 iframe） -->
+          <iframe
+            v-if="store.fileType === 'html'"
+            class="html-preview"
+            :srcdoc="store.content"
+            sandbox="allow-same-origin allow-popups allow-forms allow-modals"
+          ></iframe>
+          <div v-else class="preview-content markdown-body" v-html="store.renderedHtml"></div>
         </div>
       </div>
       <div class="status-bar">
@@ -999,6 +1158,15 @@ watch(
 
 .preview-content[contenteditable="true"]:focus {
   outline: none;
+}
+
+/* HTML 预览：沙箱 iframe 铺满预览区，呈现浏览器渲染效果 */
+.html-preview {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #fff;
 }
 
 .status-bar {
