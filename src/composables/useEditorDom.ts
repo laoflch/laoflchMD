@@ -82,7 +82,13 @@ function insertAtSelection(before: string, after: string, current: string): stri
 
 /** 读取预览模式可编辑内容的 HTML；无可用节点时返回 null */
 function getEditableHtml(): string | null {
-  return editableEl.value ? editableEl.value.innerHTML : null
+  const el = editableEl.value
+  if (!el) return null
+  // 代码块工具条属于预览 UI，不属于文档内容，读取时剔除
+  if (!el.querySelector('.code-block-bar')) return el.innerHTML
+  const clone = el.cloneNode(true) as HTMLElement
+  clone.querySelectorAll('.code-block-bar').forEach((bar) => bar.remove())
+  return clone.innerHTML
 }
 
 /**

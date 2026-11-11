@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useDragDivider } from '../composables/useDragDivider'
 import { useEditorDom } from '../composables/useEditorDom'
 import { useFindReplace } from '../composables/useFindReplace'
-import { useEditorStore } from '../stores/editor'
+import { useEditorStore, CODE_LANG_OPTIONS } from '../stores/editor'
 import { useS3Store } from '../stores/s3'
 import { useSettingsStore } from '../stores/settings'
 import CodeMirrorEditor from './CodeMirrorEditor.vue'
@@ -50,13 +50,105 @@ watch(
 // 确保 Ctrl+S 时 getEditableHtml() 读到的是用户编辑后的完整内容。
 const previewDirty = ref(false)
 
+// ——— 代码块工具条（语言切换 / 复制）———
+// 工具条只在预览 DOM 中注入，不写入 renderedHtml，导出 HTML/PDF 时不会带上它
+function decorateCodeBlocks(root: HTMLElement) {
+  root.querySelectorAll('pre.code-block').forEach((node) => {
+    const pre = node as HTMLElement
+    if (pre.dataset.idx === undefined) return
+    if (pre.querySelector(':scope > .code-block-bar')) return
+    const bar = document.createElement('div')
+    bar.className = 'code-block-bar'
+    bar.contentEditable = 'false'
+
+    const select = document.createElement('select')
+    select.className = 'code-lang-select'
+    select.title = '切换代码语言'
+    const current = pre.dataset.lang || 'text'
+    for (const lang of CODE_LANG_OPTIONS) {
+      const opt = document.createElement('option')
+      opt.value = lang
+      opt.textContent = lang
+      if (lang === current) opt.selected = true
+      select.appendChild(opt)
+    }
+
+    const copy = document.createElement('button')
+    copy.type = 'button'
+    copy.className = 'code-copy-btn'
+    copy.textContent = '复制'
+    copy.title = '复制代码'
+
+    bar.append(select, copy)
+    pre.appendChild(bar)
+  })
+}
+
+// 写入预览内容并补齐代码块工具条
+function writePreviewHtml(html: string) {
+  const el = editableRef.value
+  if (!el) return
+  el.innerHTML = html
+  if (store.fileType === 'markdown') decorateCodeBlocks(el)
+}
+
+// 切换代码块语言：仅预览生效，保存时写回源码围栏
+async function onPreviewCodeLangChange(e: Event) {
+  const sel = e.target as HTMLElement | null
+  if (!sel || !(sel instanceof HTMLSelectElement) || !sel.classList.contains('code-lang-select')) return
+  const pre = sel.closest('pre.code-block') as HTMLElement | null
+  const idx = Number(pre?.dataset.idx)
+  if (!Number.isFinite(idx)) return
+  const top = previewScrollRef.value?.scrollTop ?? 0
+  // 若预览区已有未同步的编辑，先回写内容，否则重渲染会被 dirty 守卫拦截、看不到语言切换效果
+  if (previewDirty.value && editableRef.value) {
+    store.setContentFromHtml(editableRef.value.innerHTML)
+    previewDirty.value = false
+  }
+  store.setCodeBlockLang(idx, sel.value)
+  await nextTick()
+  // 重渲染后恢复滚动位置
+  requestAnimationFrame(() => {
+    if (previewScrollRef.value) previewScrollRef.value.scrollTop = top
+  })
+}
+
+// 复制代码块内容
+async function onPreviewCodeClick(e: MouseEvent) {
+  const target = e.target as HTMLElement | null
+  const btn = target?.closest('.code-copy-btn') as HTMLElement | null
+  if (!btn) return
+  e.preventDefault()
+  const pre = btn.closest('pre.code-block')
+  const code = (pre?.querySelector('code')?.textContent || '').replace(/\n$/, '')
+  if (!code) return
+  try {
+    await navigator.clipboard.writeText(code)
+  } catch {
+    // 剪贴板 API 不可用时回退
+    const ta = document.createElement('textarea')
+    ta.value = code
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+  }
+  const label = btn.textContent
+  btn.textContent = '已复制'
+  window.setTimeout(() => {
+    btn.textContent = label || '复制'
+  }, 1200)
+}
+
 watch(
   [() => store.viewMode, () => store.renderedHtml, editableRef],
   () => {
     const el = editableRef.value
     if (!el || store.viewMode !== 'preview') return
     if (previewDirty.value) return
-    el.innerHTML = store.renderedHtml
+    writePreviewHtml(store.renderedHtml)
   },
   { immediate: true }
 )
@@ -77,8 +169,7 @@ watch(
     if (m === 'preview' && old !== 'preview') {
       previewDirty.value = false
       const html = await store.ensureRendered()
-      const el = editableRef.value
-      if (el) el.innerHTML = html
+      if (editableRef.value) writePreviewHtml(html)
     }
   }
 )
@@ -188,6 +279,8 @@ function applyPreviewFind() {
   const textNodes: Text[] = []
   let node: Node | null
   while ((node = walker.nextNode())) {
+    // 跳过代码块工具条（语言下拉 / 复制按钮）内的文字
+    if ((node.parentElement as HTMLElement | null)?.closest('.code-block-bar')) continue
     if (node.textContent && node.textContent.length) textNodes.push(node as Text)
   }
   const marks: HTMLElement[] = []
@@ -538,6 +631,10 @@ function onPreviewInput() {
 function onPreviewBlur(e: FocusEvent) {
   const el = e.target as HTMLElement
   if (!el || !el.innerHTML) return
+  // 焦点移到查找栏或代码块工具条（语言下拉 / 复制按钮）时不反写：
+  // 避免仅操作 UI 就把预览 DOM 做一次有损 Markdown 逆转换
+  const next = e.relatedTarget as HTMLElement | null
+  if (next?.closest?.('.find-bar, .code-block-bar')) return
   store.setContentFromHtml(el.innerHTML)
 }
 
@@ -861,7 +958,12 @@ watch(
 
     <!-- Preview mode: rendered only (editable for Markdown; YAML / Jinja2 read-only; HTML browser-like) -->
     <div v-else-if="store.viewMode === 'preview'" class="preview-pane">
-      <div ref="previewScrollRef" class="preview-scroll">
+      <div
+        ref="previewScrollRef"
+        class="preview-scroll"
+        @change="onPreviewCodeLangChange"
+        @click="onPreviewCodeClick"
+      >
         <!-- HTML：浏览器渲染效果（沙箱 iframe） -->
         <iframe
           v-if="store.fileType === 'html'"
@@ -1364,6 +1466,58 @@ watch(
   border-radius: 6px;
   font-size: 13px;
   font-variant-ligatures: none;
+}
+
+/* 代码块右上角工具条：语言切换 + 复制 */
+:deep(.markdown-body pre.code-block) {
+  position: relative;
+}
+
+:deep(.code-block-bar) {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 3;
+}
+
+:deep(.code-lang-select),
+:deep(.code-copy-btn) {
+  height: 22px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 1;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  outline: none;
+}
+
+:deep(.code-lang-select:hover),
+:deep(.code-copy-btn:hover) {
+  color: var(--accent-color);
+  border-color: var(--accent-color);
+}
+
+/* 代码块行号（CSS 计数器，不写入 DOM 文本，保存时不受影响） */
+:deep(.markdown-body pre.code-block code) {
+  counter-reset: code-line;
+}
+
+:deep(.markdown-body pre.code-block .line::before) {
+  counter-increment: code-line;
+  content: counter(code-line);
+  display: inline-block;
+  width: 2em;
+  margin-right: 12px;
+  text-align: right;
+  color: var(--text-muted);
+  opacity: 0.45;
+  user-select: none;
 }
 
 :deep(.markdown-body blockquote) {

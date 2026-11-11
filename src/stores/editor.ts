@@ -48,6 +48,9 @@ const langImporters: Record<string, () => Promise<any>> = {
 // 首屏加载的常用语言（足够欢迎页/常见场景，保持启动轻量；其余语言按需动态加载）
 const INITIAL_LANGS = ['javascript', 'json', 'markdown', 'bash']
 
+// 预览代码块语言切换的可选项（text 表示纯文本，无需 grammar）
+export const CODE_LANG_OPTIONS: string[] = [...Object.keys(langImporters), 'text']
+
 const THEMES = {
   light: () => import('@shikijs/themes/github-light'),
   dark: () => import('@shikijs/themes/github-dark')
@@ -98,8 +101,9 @@ async function ensureLanguage(hi: HighlighterCore, lang: string): Promise<boolea
   }
 }
 
-// 给 Shiki 输出附加 class，便于 Turndown 反向转换时识别代码块与语言
-function codeBlockTransformer(lang: string): ShikiTransformer {
+// 给 Shiki 输出附加 class，便于 Turndown 反向转换时识别代码块与语言；
+// 同时写入序号与语言信息，供预览区右上角语言切换使用
+function codeBlockTransformer(lang: string, meta?: { index: number; origLang: string }): ShikiTransformer {
   return {
     name: 'code-block-meta',
     pre(node) {
@@ -108,6 +112,11 @@ function codeBlockTransformer(lang: string): ShikiTransformer {
         : []
       if (!cls.includes('code-block')) cls.push('code-block')
       node.properties.class = cls
+      if (meta) {
+        node.properties['data-idx'] = String(meta.index)
+        node.properties['data-lang'] = lang || 'text'
+        node.properties['data-orig'] = meta.origLang || ''
+      }
     },
     code(node) {
       const cls = Array.isArray(node.properties.class)
@@ -119,7 +128,11 @@ function codeBlockTransformer(lang: string): ShikiTransformer {
   }
 }
 
-async function highlightCode(code: string, lang: string): Promise<string> {
+async function highlightCode(
+  code: string,
+  lang: string,
+  meta?: { index: number; origLang: string }
+): Promise<string> {
   const cleanLang = (lang || '').trim().toLowerCase()
   try {
     const hi = await getHighlighter()
@@ -127,13 +140,16 @@ async function highlightCode(code: string, lang: string): Promise<string> {
       return hi.codeToHtml(code, {
         lang: cleanLang,
         theme: currentThemeName.value === 'dark' ? 'github-dark' : 'github-light',
-        transformers: [codeBlockTransformer(cleanLang)]
+        transformers: [codeBlockTransformer(cleanLang, meta)]
       })
     }
   } catch {
     // 高亮失败，fallthrough 到纯文本
   }
-  return `<pre class="code-block"><code>${escapeHtml(code)}</code></pre>`
+  const attrs = meta
+    ? ` data-idx="${meta.index}" data-lang="${escapeHtml(cleanLang || 'text')}" data-orig="${escapeHtml(meta.origLang)}"`
+    : ''
+  return `<pre class="code-block"${attrs}><code>${escapeHtml(code)}</code></pre>`
 }
 
 function escapeHtml(s: string): string {
@@ -150,9 +166,15 @@ interface PendingCodeBlock {
   key: string
   code: string
   lang: string
+  /** 代码块在文档中的序号（用于预览区语言切换与保存时写回围栏） */
+  index: number
 }
 let pendingCodeBlocks: PendingCodeBlock[] = []
 let hlSeq = 0
+// 单次渲染内的代码块序号
+let codeBlockSeq = 0
+// 预览区手动切换的代码块语言：序号 → 语言（仅预览生效，保存时写回源码）
+const codeLangOverrides = new Map<number, string>()
 
 const md = new MarkdownIt({
   html: true,
@@ -161,7 +183,7 @@ const md = new MarkdownIt({
   breaks: true,
   highlight: (str: string, lang: string): string => {
     const key = `SHIKI${hlSeq++}`
-    pendingCodeBlocks.push({ key, code: str, lang: lang || '' })
+    pendingCodeBlocks.push({ key, code: str, lang: lang || '', index: codeBlockSeq++ })
     // 骨架：先渲染转义的原始代码，并带上唯一锚点 data-hl；
     // Shiki 高亮完成后用锚点把整个代码块替换为带高亮的 HTML
     return `<pre class="code-block" data-hl="${key}"><code class="language-${escapeHtml(lang || '')}">${escapeHtml(str)}</code></pre>`
@@ -208,8 +230,10 @@ md.core.ruler.after('block', 'preserveBlankLines', (state: any) => {
           out.push(tok)
         }
       }
-      prevEnd = t.map[1]
     }
+    // 顶层块级 token（标题、列表、代码块、表格、引用等）同样推进 prevEnd，
+    // 否则这些块自身的行数会被当成空行，导致预览出现大段空白
+    if (Array.isArray(t.map) && t.level === 0) prevEnd = t.map[1]
     out.push(t)
   }
   state.tokens = out
@@ -242,6 +266,8 @@ function getTurndown(): TurndownService {
       // 若只取 code.textContent 会导致编辑点之后的内容在保存时丢失。
       // 同时把 pre 内的 <br>（代码块内按回车产生）转成换行符，否则 textContent 不含换行。
       const clone = node.cloneNode(true)
+      // 移除预览区注入的语言切换/复制工具条，避免其文字进入 Markdown
+      clone.querySelectorAll('.code-block-bar').forEach((bar: any) => bar.remove())
       const brs = clone.querySelectorAll('br')
       for (let i = 0; i < brs.length; i++) {
         brs[i].replaceWith(clone.ownerDocument.createTextNode('\n'))
@@ -396,6 +422,7 @@ function hello() {
     const batch = ++renderSeq
     const pending: PendingCodeBlock[] = []
     pendingCodeBlocks = pending
+    codeBlockSeq = 0
 
     const skeleton = md.render(content.value)
     if (batch !== renderSeq) return
@@ -404,7 +431,14 @@ function hello() {
     if (pending.length === 0) return
 
     const results = await Promise.all(
-      pending.map(async (p) => ({ key: p.key, html: await highlightCode(p.code, p.lang) }))
+      pending.map(async (p) => {
+        // 预览区手动切换过语言的代码块，按选择结果重新高亮
+        const lang = codeLangOverrides.get(p.index) || p.lang
+        return {
+          key: p.key,
+          html: await highlightCode(p.code, lang, { index: p.index, origLang: p.lang })
+        }
+      })
     )
     if (batch !== renderSeq) return
 
@@ -466,6 +500,42 @@ function hello() {
     isModified.value = true
   }
 
+  // 预览区切换某个代码块的语言：仅改变预览高亮，保存时才写回源码围栏
+  function setCodeBlockLang(index: number, lang: string) {
+    codeLangOverrides.set(index, lang)
+    void renderMarkdown()
+  }
+
+  // 保存前把预览中选择的代码块语言写回源码围栏（fence 出现顺序与代码块序号一致）
+  function applyCodeLangOverrides(text: string): string {
+    if (codeLangOverrides.size === 0) return text
+    const tokens = md.parse(text, {})
+    const lines = text.split('\n')
+    let changed = false
+    let fenceIndex = 0
+    for (const t of tokens) {
+      if (t.type !== 'fence' || !t.map) continue
+      const next = codeLangOverrides.get(fenceIndex++)
+      if (!next) continue
+      const lineIdx = t.map[0]
+      const line = lines[lineIdx]
+      const m = line?.match(/^(\s*(?:`{3,}|~{3,}))(.*)$/)
+      if (!m) continue
+      // 保留围栏后除语言外的其余信息（如 title="xxx"）
+      const origLang = (t.info || '').trim().split(/\s+/)[0] || ''
+      const rest = m[2].trim().slice(origLang.length)
+      lines[lineIdx] = m[1] + next + rest
+      changed = true
+    }
+    return changed ? lines.join('\n') : text
+  }
+
+  // 保存成功后同步内存内容（写回语言后的文本），并清空临时语言选择
+  function commitSavedContent(text: string) {
+    codeLangOverrides.clear()
+    if (text !== content.value) content.value = text
+  }
+
   // 加载文件内容（从文件树/S3 打开时调用）：设置内容、重置历史、标记为未修改
   function loadFile(contentText: string, path: string | null, s3: { bucket: string; key: string } | null = null) {
     history.value = [contentText]
@@ -474,6 +544,7 @@ function hello() {
     filePath.value = path
     s3Source.value = s3
     isModified.value = false
+    codeLangOverrides.clear()
   }
 
   function setFilePath(path: string | null) {
@@ -607,18 +678,21 @@ function hello() {
 
   async function saveFile() {
     syncEditablePreviewToContent()
+    // 预览区手动切换的代码块语言，在保存时写回源码围栏
+    const textToSave = applyCodeLangOverrides(content.value)
     console.log('[saveFile] triggered, s3Source=', s3Source.value, 'filePath=', filePath.value,
-      'contentLen=', content.value.length, 'contentHead=', JSON.stringify(content.value.slice(0, 80)))
+      'contentLen=', textToSave.length, 'contentHead=', JSON.stringify(textToSave.slice(0, 80)))
 
     // S3 文件直接保存回 S3（Ctrl+S 与工具栏「保存」一致）
     if (s3Source.value) {
       const s3 = useS3Store()
       const ok = await s3.putObject(
         s3Source.value.key,
-        content.value,
+        textToSave,
         s3Source.value.bucket
       )
       if (ok) {
+        commitSavedContent(textToSave)
         isModified.value = false
         scheduleRefreshIndexAfterSave('s3', s3Source.value.key)
         return s3Source.value.key
@@ -626,10 +700,11 @@ function hello() {
       return null
     }
 
-    const result = await window.api.saveFile(content.value, filePath.value || undefined)
+    const result = await window.api.saveFile(textToSave, filePath.value || undefined)
     console.log('[saveFile] result=', result)
     if (result) {
       filePath.value = result
+      commitSavedContent(textToSave)
       isModified.value = false
       scheduleRefreshIndexAfterSave('local', result)
     }
@@ -637,9 +712,11 @@ function hello() {
   }
 
   async function saveFileAs() {
-    const result = await window.api.saveFileAs(content.value, fileName.value)
+    const textToSave = applyCodeLangOverrides(content.value)
+    const result = await window.api.saveFileAs(textToSave, fileName.value)
     if (result) {
       filePath.value = result
+      commitSavedContent(textToSave)
       isModified.value = false
       scheduleRefreshIndexAfterSave('local', result)
     }
@@ -661,6 +738,7 @@ function hello() {
     ensureRendered,
     setContent,
     setContentFromHtml,
+    setCodeBlockLang,
     markModified,
     loadFile,
     setFilePath,
